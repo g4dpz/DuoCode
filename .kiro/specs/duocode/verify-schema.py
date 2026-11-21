@@ -258,8 +258,8 @@ try:
     # The statements below are TAKEN FROM database-schema.md, so the specification and the test cannot drift apart.
     spec_text = (HERE / "database-schema.md").read_text()
     reserve_sql = next(b for b in blocks if "UPDATE key_usage" in b and "RETURNING reserved" in b)
-    register_sql = next(b for b in blocks if "INSERT INTO key_usage (key_id) VALUES ($1)" in b)
-    seal_sql = re.search(r"`(INSERT INTO key_usage \(key_id, reserved, sealed\) VALUES \(\$1, 1073741824, true\) ON CONFLICT \(key_id\) DO UPDATE SET reserved = 1073741824, sealed = true;)`", spec_text).group(1)
+    register_sql = next(b for b in blocks if "INSERT INTO key_usage (key_id, fingerprint) VALUES ($1, $2)" in b)
+    seal_sql = re.search(r"`(INSERT INTO key_usage \(key_id, fingerprint, reserved, sealed\) VALUES \(\$1, \$2, 1073741824, true\) ON CONFLICT \(key_id\) DO UPDATE SET reserved = 1073741824, sealed = true;)`", spec_text).group(1)
     check_sql = next(b for b in blocks if "SELECT NOT sealed AS usable FROM key_usage" in b)
     L = 2 ** 30
     BLOCK = 1024
@@ -270,11 +270,15 @@ try:
         out = sql(text)
         return int(out) if out else None
 
-    def register(k):
-        sql(register_sql.replace("$1", str(k)))
+    def fp(k, material=None):
+        """Stand-in for the key fingerprint: SHA-256 of the key material (the material is a label here)."""
+        return f"sha256(convert_to('material-{material if material is not None else k}','UTF8'))"
 
-    def seal(k):
-        sql(seal_sql.replace("$1", str(k)))
+    def register(k, material=None, expect_error=None):
+        return sql(register_sql.replace("$1", str(k)).replace("$2", fp(k, material)), expect_error=expect_error)
+
+    def seal(k, material=None):
+        sql(seal_sql.replace("$1", str(k)).replace("$2", fp(k, material)))
 
     def usable(k):
         """The pre-encryption check taken from the specification. No row (unregistered key) counts as unusable."""
@@ -285,7 +289,7 @@ try:
         return int(out)
 
     def set_R(k, v):
-        sql(f"INSERT INTO key_usage(key_id, reserved) VALUES ({k},{v}) ON CONFLICT (key_id) DO UPDATE SET reserved = EXCLUDED.reserved;")
+        sql(f"INSERT INTO key_usage(key_id, fingerprint, reserved) VALUES ({k},{fp(k)},{v}) ON CONFLICT (key_id) DO UPDATE SET reserved = EXCLUDED.reserved;")
 
     class Refused(Exception):
         pass
@@ -321,7 +325,7 @@ try:
         reset_data()
         register(1); register(1)              # idempotent
         assert sql("SELECT count(*) FROM key_usage;") == "1"
-        sql(f"INSERT INTO key_usage(key_id, reserved) VALUES (1, 5);", expect_error="key_usage_pkey")
+        sql(f"INSERT INTO key_usage(key_id, fingerprint, reserved) VALUES (1, {fp(1, 'other')}, 5);", expect_error="key_usage_pkey")
         sql(f"UPDATE key_usage SET reserved = {L + 1} WHERE key_id = 1;", expect_error="key_usage_reserved_check")
         sql("UPDATE key_usage SET reserved = -1 WHERE key_id = 1;", expect_error="key_usage_reserved_check")
         set_R(1, L)                           # exactly 2^30 is allowed
@@ -576,27 +580,102 @@ try:
         register(7)                                                     # ON CONFLICT DO NOTHING: stays sealed
         assert R(7) == L and usable(7) is False and reserve(7) is None
 
-    @test("atomic claims: with one unit left and 16 racing requests on one instance exactly one claims it, the rest defer (CR-11 model, real reservation)")
+    @test("atomic claims: one reserved unit, 16 racing requests: exactly one claims and consumes it; a consumed claim is never returned, an unused claim is (CR-11, CR-12)")
     def _():
         import threading
         reset_data(); register(1)
-        lock = threading.Lock()                  # models the single-threaded synchronous claim step of one process
-        allowance = {"v": 1}
-        claimed, deferred, consumed = [], [], []
+        assert reserve(1, block=1) == 1                  # the unit really is reserved: R = 1
+        lock = threading.Lock()                          # models the single-threaded synchronous claim step of one process
+        st = {"allowance": 1, "consumed": 0}
+        claimed, deferred = [], []
         def request(i):
             with lock:
-                if allowance["v"] >= 1:
-                    allowance["v"] -= 1; claimed.append(i); got = True
+                if st["allowance"] >= 1:
+                    st["allowance"] -= 1; claimed.append(i); got = True
                 else:
                     deferred.append(i); got = False
             if got:
-                consumed.append(i)               # the claimed unit is used by exactly this request
+                with lock:
+                    st["consumed"] += 1                  # used: spent for ever, never returned
         with ThreadPoolExecutor(16) as ex:
             list(ex.map(request, range(16)))
-        assert len(claimed) == 1 and len(deferred) == 15 and len(consumed) == 1 and allowance["v"] == 0
-        with lock:                               # an operation that ends without encrypting returns its claim
-            allowance["v"] += 1
-        assert allowance["v"] == 1
+        assert len(claimed) == 1 and len(deferred) == 15 and st["consumed"] == 1 and st["allowance"] == 0
+        assert st["consumed"] <= R() == 1
+        # phase 2: one more real unit. A request that claims but ends without encrypting returns its claim. Another then uses it.
+        assert reserve(1, block=1) == 2
+        with lock: st["allowance"] += 1
+        with lock: st["allowance"] -= 1                  # request A claims
+        with lock: st["allowance"] += 1                  # request A ends without encrypting: returns the UNUSED claim
+        with lock: st["allowance"] -= 1; st["consumed"] += 1   # request B claims the returned unit and consumes it
+        assert st["allowance"] == 0 and st["consumed"] == 2 and st["consumed"] <= R() == 2
+
+    @test("claim recheck after a pending reservation: no claim ever exceeds the allowance that really exists (CR-12 model, real reservations)")
+    def _():
+        import threading
+        reset_data(); register(1)
+        lock = threading.Lock()
+        st = {"allowance": 0, "claims": 0, "min_allowance": 0}
+        def acquire(m=1):
+            while True:
+                with lock:                                # synchronous check-and-decrement, AFTER any wait
+                    if st["allowance"] >= m:
+                        st["allowance"] -= m; st["claims"] += m
+                        st["min_allowance"] = min(st["min_allowance"], st["allowance"])
+                        return True
+                    shortfall = m - st["allowance"]       # recomputed from the allowance as it is now
+                blocks_needed = -(-shortfall // 4)
+                granted = reserve(1, block=4 * blocks_needed)   # the (slow) reservation, outside the lock
+                if granted is None:
+                    return False
+                with lock:
+                    st["allowance"] += 4 * blocks_needed  # units join the allowance only after the statement returned
+        with ThreadPoolExecutor(12) as ex:
+            results = list(ex.map(lambda i: acquire(1), range(12)))
+        assert all(results) and st["claims"] == 12 and st["min_allowance"] >= 0
+        assert R() >= st["claims"] and R() - st["claims"] == st["allowance"]   # every unit is either claimed or still in the allowance
+
+    @test("fingerprint uniqueness: retired key material cannot be registered again under a new identifier (CR-12)")
+    def _():
+        reset_data()
+        register(1, material="A"); assert reserve(1) == BLOCK
+        seal(1, material="A")                              # key 1 superseded and sealed. Its row is never deleted
+        register(2, material="A", expect_error="key_usage_fingerprint_key")   # same material under a new id: refused by the database
+        register(3, material="B")                          # new material is accepted
+        assert sql("SELECT count(*) FROM key_usage;") == "2" and R(3) == 0
+
+    @test("keys:generate order: reservation under an unregistered key is refused, so register first, reserve second, and a new key starts at 1 or more (CR-12)")
+    def _():
+        reset_data()
+        assert reserve(5, block=1) is None                 # unregistered
+        register(5); assert reserve(5, block=1) == 1       # the self-test unit
+        assert R(5) >= 1 and usable(5) is True
+
+    @test("restore procedure seals exactly the identifiers of the ring before the new key was added, never the new key (CR-12)")
+    def _():
+        reset_data()
+        ring_before = [1, 2]                               # the newest ring, captured BEFORE adding the new key
+        new_id = max(ring_before) + 1
+        register(1); register(2); assert reserve(2) == BLOCK
+        for kid in ring_before: seal(kid)                  # the procedure
+        register(new_id)                                   # the new key is generated and registered after the set was captured
+        assert usable(1) is False and usable(2) is False and usable(new_id) is True and reserve(new_id) == BLOCK
+        seal(new_id)                                       # what the procedure must NOT do: this test documents the failure it would cause
+        assert usable(new_id) is False
+
+    @test("health by key role: only the active key can be warning, degraded or critical; a sealed non-active key is 'sealed' with no alert; a sealed active key is critical (CR-12 rule)")
+    def _():
+        W, RT, H = 2 ** 27, 2 ** 28, L
+        def health(active, sealed, r):
+            if sealed:
+                return "critical" if active else "sealed"
+            if not active:
+                return "ok"
+            return "critical" if r >= H else "degraded" if r >= RT else "warning" if r >= W else "ok"
+        assert health(True, False, 10) == "ok" and health(True, False, W) == "warning"
+        assert health(True, False, RT) == "degraded" and health(True, False, H) == "critical"
+        assert health(False, True, L) == "sealed"          # a normal rotation leaves no alarm behind
+        assert health(True, True, L) == "critical"         # misconfiguration
+        assert health(False, False, RT) == "ok"
 
     @test("sealing: the old key is refused for ever, sealing never lowers a counter, is idempotent, and sealed forces the counter to 2^30")
     def _():

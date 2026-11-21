@@ -77,7 +77,7 @@ Your point was right. The revision 3.1 draft refused a reservation only after th
 
 **Files changed for CR-9:** `database-schema.md`, `design.md`, `security-assessment.md`, `deployment.md`, `test-strategy.md`, `requirements.md` (R10.10, R10.13, CR-9, RD-14, glossary), `traceability.md`, `tasks.md`, `verify-schema.py`, `check-consistency.py`, and this package.
 
-## 3B. Rotation after 2^28 (CR-10) and PR #2 review findings (CR-11)
+## 3B. Rotation after 2^28 (CR-10) and PR #2 review findings (CR-11, CR-12)
 
 ### Rotation completed after the 2^28 threshold (your clarification)
 
@@ -85,9 +85,9 @@ Specified once in `database-schema.md` section 6.3, summarised in `security-asse
 
 | Your requirement | How it is met |
 |---|---|
-| The new key becomes the active key | New key registered, set as the only `ACTIVE` key, every instance restarted. The ring is read only at process start, so the active key cannot change while a process runs |
+| The new key becomes the active key | New key registered and **staged** on every instance first, then set as the only `ACTIVE` key by a rolling restart. The ring is read only at process start, so the active key cannot change while a process runs |
 | The previous key becomes decrypt-only | `DECRYPT_ONLY` with `deactivatedAt`. Decryption continues. It never becomes active again |
-| Outstanding in-memory allowances for the previous key must no longer be usable | Two mechanisms. Restarted instances have no allowance (memory only). The previous key is then **sealed** (`sealed = true`, counter at 2^30), and every encrypting request runs a pre-encryption check on the sealed flag before it begins, so an instance that was missed cannot use a stale allowance for any request that begins after the seal commits. A request already in flight may finish, because its units were counted |
+| Outstanding in-memory allowances for the previous key must no longer be usable | Two mechanisms. Restarted instances have no allowance (memory only). The previous key is then **sealed** (`sealed = true`, counter at 2^30), and every encrypting request runs a pre-encryption check on the sealed flag before it begins, so an instance that was missed cannot use a stale allowance for any request that begins after the seal commits. Requests that had already passed the check may finish: the bound is the sum of their claims, all already counted, and the procedure waits `KEY_SEAL_DRAIN_SECONDS` |
 | Unused reservations stay counted | Sealing raises the counter to 2^30 and never lowers it. Unused units remain inside the total |
 | No instance resumes encryption under the previous key merely because it holds an allowance | An allowance is permission to use units already counted, never permission to use the key. The key must also be the instance's active key and unsealed |
 
@@ -115,6 +115,24 @@ Copilot reviewed commit `4e64b22` and left 13 findings (5 high, 8 medium). All w
 
 Findings 1 to 6 and 8 to 11 change the specification. Findings 12 and 13 fix the test script so a regression cannot hang CI. The PostgreSQL-specific findings (2, 3, 12, 13) are covered by the real PostgreSQL tests in section 5.2.
 
+### Second Copilot review of PR #2 (commit `b8302f6`): findings and dispositions (CR-12)
+
+Copilot's second review raised 9 new findings and kept 2 earlier threads open (duplicate key material, exhausted-key start-up), both of which were already fixed in `b8302f6` and are now extended. All 9 new findings were substantive. I accepted all of them. Two of them show real defects in my own previous fix, which I should state plainly: the restore procedure, followed literally, would have sealed the key it had just generated, and the claim step could have granted more units than the allowance really held.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | Post-seal exposure is not one request: several requests across instances can have passed the check before the seal | Accepted. The bound is now stated as the **sum of the claims of all operations that had passed the check when the seal committed**, all already counted, so the hard stop is unaffected. A drain wait `KEY_SEAL_DRAIN_SECONDS` (default 60) follows the seal. A stricter bound would need all operations to be drained, which the design does not do |
+| 2 | Restore seals "every id in the newest ring", which includes the new key | **Real defect, fixed.** The procedure records the set S of identifiers **before** the new key is added, seals exactly S, and never the new key. A test shows the failure the wrong order would cause |
+| 3 | `keys:generate` orders a counted self-test encryption before registration, but an unregistered key cannot reserve | Accepted. Order is now: check material, **register**, **reserve** at least one unit, **then** encrypt, write the ring entry. A new key starts at counter 1 or more, never 0, and the "counter 0" wording is corrected everywhere |
+| 4 | Activating a new key during a rolling restart makes updated instances write ciphertext that old-ring instances cannot decrypt | **Real defect, fixed.** Rotation now has three phases: **stage** the key on every instance (new ring status `STAGED`: loaded, decrypts, never encrypts), **activate** it, then **seal and drain** the previous key. The rotation tool refuses to activate until every instance has the key staged |
+| 5 | A re-encryption job can run out of claimed units when a live token rotation adds ciphertext between its count and its lock | Accepted. Data-dependent operations recount **under the game lock** before any write, and if they need more they roll back, enlarge the claim outside the transaction, and retry. No reservation is ever made inside the transaction |
+| 6 | The allowance can change while a reservation is in progress, so the claim could exceed what exists | **Real defect, fixed.** The claim is checked and decremented in one synchronous step **after** every wait, the shortfall is recomputed from the current allowance, and the loop repeats. One reservation per key is in flight per process. A model test with real reservations checks that no claim exceeds the allowance |
+| 7 | Retired key material can be added again under a new identifier above `highestKeyId` | Accepted. The ring keeps a permanent `fingerprintHistory` of every key ever registered, and `key_usage.fingerprint` is `UNIQUE` and never deleted, so the database refuses re-registration even after the old key is retired and removed. Tested: material of a sealed, retired key is refused under a new identifier |
+| 8 | Sealing the old key makes health critical for ever after a normal rotation | Accepted. Health is evaluated by key role. A sealed, non-active key reports `sealed` and raises no alert. A sealed key that the ring lists as `ACTIVE` is `critical` |
+| 9 | A test passes while violating the reservation and no-reuse invariants (allowance of 1 with `R` = 0) | **Real defect in the test, fixed.** The unit is now really reserved first, consumed claims are shown to stay spent, and only an unused claim is returned and re-claimed |
+| carried | Reject duplicate key material across identifiers | Already fixed in `b8302f6`, extended by the fingerprint history (7) |
+| carried | Allow budget-safe start-up with an exhausted key | Already fixed in `b8302f6` (start-up decrypts a known-answer vector and never encrypts). It now also states that `keys:generate` reserves a unit before encrypting it |
+
 ## 4. Files (revision 3.1 branch, for history)
 
 Added: `.kiro/specs/duocode/revision-3.1-review-package.md` (replaces the revision 3 package), `.kiro/specs/duocode/check-consistency.py`, `.kiro/specs/duocode/verify-schema.py`, `CONTRIBUTING.md`, `LICENSE`, `NOTICE`.
@@ -130,39 +148,43 @@ Redocly lint of `openapi/openapi.yaml`: **valid, 0 errors, 0 warnings.** The Ope
 
 ### 5.2 Database schema, constraint and reservation tests
 
-`verify-schema.py` extracts the DDL, the reservation, registration, sealing and pre-encryption-check statements **from `database-schema.md`**, so the tested SQL is the specified SQL. It applies them to a throwaway cluster and runs 45 tests.
+`verify-schema.py` extracts the DDL, the reservation, registration, sealing and pre-encryption-check statements **from `database-schema.md`**, so the tested SQL is the specified SQL. It applies them to a throwaway cluster and runs 50 tests.
 
 | Server | Result |
 |---|---|
-| PostgreSQL 15.8 (Homebrew), with `pg_dump` and `pg_restore` | **45 of 45 passed**, three runs |
-| PostgreSQL 16.16 embedded build (no `pg_dump` of its version available) | **44 of 44 passed, 1 skipped** (the logical restore test), two runs |
-| **PostgreSQL 16.16 official `postgres:16` image (Debian, Docker Desktop)**, image digest `sha256:3950ad7c3148ca2175ef1b6c36c9efbf78957ae8fbe8b3a5d7c35af50500382f`, with its own `pg_dump` and `pg_restore` | **45 of 45 passed**, one run |
+| PostgreSQL 15.8 (Homebrew), with `pg_dump` and `pg_restore` | **50 of 50 passed**, three runs |
+| PostgreSQL 16.16 embedded build (no `pg_dump` of its version available) | **49 of 49 passed, 1 skipped** (the logical restore test), two runs |
+| **PostgreSQL 16.16 official `postgres:16` image (Debian, Docker Desktop)**, image digest `sha256:3950ad7c3148ca2175ef1b6c36c9efbf78957ae8fbe8b3a5d7c35af50500382f`, with its own `pg_dump` and `pg_restore` | **50 of 50 passed**, one run |
 
-Tests for the strict hard stop (all use the real PostgreSQL statements and real concurrent connections):
+What the tests cover (all use the real PostgreSQL statements and real concurrent connections, not a mocked counter):
 
 | Test | Result |
 |---|---|
 | Reservation that takes `R` exactly to 2^30 | Granted, `R` = 2^30, the next one refused |
-| Reservation that would go beyond 2^30 | Refused whole, `R` unchanged, also when `R` is not a multiple of the block. A direct write above 2^30 is rejected by the `CHECK` |
-| Several instances reserving concurrently | 16 and 32 connections near the limit: exactly the available blocks granted, `R` ends at 2^30, a sampler never saw more. Eight instances × 100 reservations: no lost increment. The sampler is now stopped even if a worker fails |
+| Reservation that would go beyond 2^30 | Refused whole, `R` unchanged. A direct write above 2^30 is rejected by the `CHECK` |
+| Several instances reserving concurrently | 16 and 32 connections near the limit: exactly the available blocks granted, `R` ends at 2^30, a sampler never saw more (the sampler is stopped in a `finally`). Eight instances × 100 reservations: no lost increment |
 | Outstanding allowances while another instance approaches the limit | A holds a block, B takes the last, C is refused, nobody uses more units than reserved |
-| Failed and rolled-back transactions still consume units | 60 real rolled-back transactions, a rollback while a reservation commits on another connection, and an error-aborted transaction: counter never decreased and always covered the invocations |
+| Failed and rolled-back transactions still consume units | Real rolled-back and error-aborted transactions: the counter never decreased and always covered the invocations |
 | Crash and restart with an unused allowance | The counter did not decrease, lost units stayed counted |
-| Statement strictness | A second reservation started while the first is uncommitted **waited**, then was refused on the committed total. Session A is now released even if the assertion fails |
+| Statement strictness | A second reservation started while the first is uncommitted waited, then was refused. Session A is always released |
 | Negative control | The replaced shard design ended at 2^30 plus one block under the same kind of interleaving |
-| Zero and negative reservations (new) | Matched no row, changed nothing |
-| Whole blocks sized to the operation (new) | A block of 1 still obtains 22 units in one statement, and a request that does not fit is refused whole |
-| Sealing a missing row (new) | Inserts a sealed row. A later registration does not reset it |
-| Pre-encryption check and sealed flag (new) | Unsealed usable, sealed and unregistered not usable, `sealed` without the counter at 2^30 rejected |
-| Rotation completed after 2^28 (new) | With the counter past 2^28, reservations were still granted. After the rotation, the stale allowance holder was refused by the pre-encryption check and by reservation, its unused units stayed counted (`R` = 2^30, never lower), and a fresh instance worked under the new key |
-| Atomic claims (new) | 16 racing requests, one unit: exactly one claimed it, 15 deferred |
-| Restore (physical) | Restored counter behind. Sealing the old key and registering a new one refused the old key even with a deliberately wrong ring |
-| Restore past a key's registration (new) | The key absent from the restored database was sealed by its identifier from the newest ring, and the next identifier was above `highestKeyId` |
-| **Logical restore with `pg_dump` / `pg_restore` (new)** | `rate_limits` data was excluded from the dump and absent after the restore, the restored counter was behind, and the sealing procedure stopped the old key |
+| Zero and negative reservations | Matched no row, changed nothing |
+| Whole blocks sized to the operation | A block of 1 still obtains 22 units in one statement, and a request that does not fit is refused whole |
+| Sealing a missing row | Inserts a sealed row. A later registration does not reset it |
+| Pre-encryption check and sealed flag | Unsealed usable, sealed and unregistered not usable, `sealed` without the counter at 2^30 rejected |
+| Rotation completed after 2^28 | Reservations still granted past 2^28. After sealing, the stale allowance holder was refused, unused units stayed counted, and a fresh instance worked under the new key |
+| Atomic claims (corrected) | One really reserved unit, 16 racing requests: exactly one claimed and consumed it, a consumed unit is never returned, an unused claim is returned and re-claimed |
+| **Claim recheck after a reservation in progress (new, CR-12)** | 12 threads with real reservations: no claim exceeded the real allowance, the allowance never went negative, every unit was either claimed or still in the allowance |
+| **Fingerprint uniqueness (new, CR-12)** | Material of a sealed (retired) key was refused under a new identifier. New material accepted |
+| **`keys:generate` order (new, CR-12)** | An unregistered key cannot reserve. After register then reserve, the new key's counter is at least 1 |
+| **Restore seals exactly the old set (new, CR-12)** | The new key was usable and the old keys were not. Sealing the new key by mistake was shown to make it unusable |
+| **Health by key role (new, CR-12 rule)** | A sealed non-active key is `sealed` with no alert, a sealed active key is `critical`, only the active key can warn |
+| Restore (physical) and restore past a key's registration | Restored counter behind. Old keys sealed, new key registered, stale ring refused. A key absent from the restored database was sealed by identifier |
+| Logical restore with `pg_dump` / `pg_restore` | `rate_limits` data excluded from the dump and absent after restore, restored counter behind, sealing stopped the old key |
 
-The rest of the 45 tests are the constraint tests (seats, nicknames and bidirectional controls, guess chain, credential binding, one rematch ever, idempotency, rotation record, rate limits, cleanup, invariant check, start-up validation rule).
+The rest of the 50 tests are the constraint tests (seats, nicknames and bidirectional controls, guess chain, credential binding, one rematch ever, idempotency, rotation record, rate limits, cleanup, invariant check, start-up validation rule).
 
-**Limits, stated plainly.** No application exists. The instance in these tests is a small model of the allowance and claim rules. Its reservations, seals and checks go to real PostgreSQL. The tests prove the SQL, the constraints and the policy. They do not prove that a future vault follows the policy, which is why the (APP) tests in `test-strategy.md` are required in Phase 4.
+**Limits, stated plainly.** No application exists. The instance in these tests is a small model of the allowance and claim rules. Its reservations, seals and checks go to real PostgreSQL. The tests prove the SQL, the constraints and the policy. They do not prove that a future vault follows the policy, which is why the (APP) tests in `test-strategy.md` are required in Phase 4. The staged rolling rotation (zero decrypt failures), the re-encryption recount, the exposure bound after sealing and the per-role health reporting are specified as (APP) tests and have not been run.
 
 ### 5.3 Specification consistency checks
 
@@ -171,7 +193,7 @@ The rest of the 45 tests are the constraint tests (seats, nicknames and bidirect
 ```
 PASS C01 every requirement R1..R21 defined and in traceability matrix
 PASS C02 every R<n>.<m> criterion reference exists
-PASS C03 every TS group and TS-CONC id referenced is defined (18 groups, 24 concurrency scenarios)
+PASS C03 every TS group and TS-CONC id referenced is defined (18 groups, 27 concurrency scenarios)
 PASS C04 every decision ID is defined in the register and none is unknown
 PASS C05 no stale revision 2/3 identifiers or the email signature in the specification, README or licensing files
 PASS C06 every "<file>.md section N" reference resolves to a heading
@@ -179,7 +201,7 @@ PASS C07 design.md API table matches OpenAPI paths and methods (13 operations)
 PASS C08 every error code named anywhere exists in the OpenAPI ErrorCode enum (21 codes)
 PASS C09 game states agree between OpenAPI, database enum and state machine
 PASS C10 every `table.column` reference names a real column (12 tables in the DDL)
-PASS C11 every configuration key named in the specification is in design.md section 13 (23 keys)
+PASS C11 every configuration key named in the specification is in design.md section 13 (24 keys)
 PASS C12 rate-limit scopes agree between design.md and deployment.md
 PASS C13 licensing artefacts present, LICENSE is the FSF AGPL-3.0 text (sha256 0d96a4ff68ad6d4b...), NOTICE names AGPL-3.0-only
 PASS C14 GitHub workflow files parse as YAML
@@ -187,7 +209,7 @@ PASS C15 no Phase 1 gate or task is marked approved in tasks.md
 PASS C16 OpenAPI constrains codes to 4 symbols from 1..6
 PASS C17 nickname forbidden character classes agree between OpenAPI and database CHECK (NUL aside)
 PASS C18 OpenAPI rotation key pattern accepts v4 UUIDs and rejects v1 and wrong-variant values
-PASS C19 every decision in the register has a row in the traceability decision map (69 decisions)
+PASS C19 every decision in the register has a row in the traceability decision map (70 decisions)
 PASS C20 no decision recorded as approved in the register is still described as pending elsewhere
 PASS C21 no application code, database migration or implementation directory exists
 PASS C23 key usage design is consistent: one authoritative row per key, CHECK at 2^30, thresholds 2^27 / 2^28 / 2^30, strict statement, terms defined, sharding only mentioned as replaced
@@ -202,7 +224,7 @@ The checks are textual. They prove that identifiers, references and definitions 
 
 | Item | Reason | How to complete it |
 |---|---|---|
-| (APP) counter tests: instrumented vault, `kill -9` of a running instance, forced rollback after a real encryption, real instances, replay after refusal, restart at the hard stop, ring validation, refresh | No application exists | TS-ENC and TS-CONC-20 to TS-CONC-24 in Phase 4 |
+| (APP) counter tests: instrumented vault, `kill -9` of a running instance, forced rollback after a real encryption, real instances, replay after refusal, restart at the hard stop, ring validation, refresh, staged rolling rotation, re-encryption recount, exposure after the seal, per-role health | No application exists | TS-ENC and TS-CONC-20 to TS-CONC-27 in Phase 4 |
 | Restore with a real key ring, `keys:seal`, `keys:generate` and `keys:verify` as tools, and the full restore and rotation drills | The tools and the ring do not exist. The SQL behaviour of sealing, restoring and registering was tested | TS-OPS, tasks 9.5 and 9.6 |
 | Web Crypto details (HKDF, AES-GCM with the AAD layout), RFC 8785 library, Caddy build and reproducibility | No implementation or build | Tasks 4.5, 4.7, 9.3 |
 
@@ -232,4 +254,4 @@ Inputs only you can give. I have not invented any of them:
 3. LI-1 to LI-4 (section 6).
 4. The (APP) tests and the restore and rotation drills with real tools (section 5.4).
 5. Drafting proposals not explicitly approved: proxy access-log retention (14 days, no IP by default), backup recipients, a named owner for the Caddy build, the 7-day target for critical proxy security upgrades, re-verification of the Caddy version pins at build time. The privacy notice and UK GDPR wording remain tasks.
-6. Copilot's second review of the corrections (below, once it completes).
+6. A third Copilot review of the CR-12 corrections is pending (see the report with PR #2).

@@ -42,7 +42,7 @@ for fn,t in files.items():
 check(f'C03 every TS group and TS-CONC id referenced is defined ({len(defined)} groups, {len(conc_def)} concurrency scenarios)',pr)
 # 4 decision ids
 reg=req
-ids={'ND':9,'C':7,'CL':8,'RD':14,'OD':10,'CR':11,'CH':6}
+ids={'ND':9,'C':7,'CL':8,'RD':14,'OD':10,'CR':12,'CH':6}
 pr=[]
 for fn,t in files.items():
     for k,mx in ids.items():
@@ -127,7 +127,7 @@ for fn in spec:
     for k in set(re.findall(r'`([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)`',files[fn])):
         if k.startswith(('TS_','INVALID_','GAME_')): continue
         if k in enum or k in {'READ_ONLY','SPDX','SOURCE_DATE_EPOCH'}: continue  # SOURCE_DATE_EPOCH is a build variable, not application configuration
-        if re.fullmatch(r'(WAITING_FOR_PLAYER|WAITING_FOR_CODES|PLAYER_[12]_WINS|DRAW|ACTIVE|COMPLETED|EXPIRED|NOT_STARTED|IN_PROGRESS|SOLVED|EXHAUSTED|DECRYPT_ONLY|ROTATED|SUPERSEDED|ROTATION_SIDE_EFFECT|REVOKED|CONSUMED|LIVE|ACCESS|INVITATION|REMATCH|EXPIRED_PENDING|ROTATION_OVERDUE|WARNING)',k): continue
+        if re.fullmatch(r'(WAITING_FOR_PLAYER|WAITING_FOR_CODES|PLAYER_[12]_WINS|DRAW|ACTIVE|COMPLETED|EXPIRED|NOT_STARTED|IN_PROGRESS|SOLVED|EXHAUSTED|DECRYPT_ONLY|ROTATED|SUPERSEDED|ROTATION_SIDE_EFFECT|REVOKED|CONSUMED|LIVE|ACCESS|INVITATION|REMATCH|EXPIRED_PENDING|ROTATION_OVERDUE|WARNING|STAGED)',k): continue
         if k not in allowed and not k.startswith(('RATE_LIMIT_','TTL_')) : pr.append(f'{fn}: {k} not in configuration table')
 check(f'C11 every configuration key named in the specification is in design.md section 13 ({len(cfg)} keys)',pr)
 # 12 deployment scopes vs design
@@ -225,6 +225,12 @@ if (w,r_,h)!=(2**27,2**28,2**30): pr.append(f'threshold defaults {w},{r_},{h} ar
 if not b or h%b!=0: pr.append('hard stop is not a multiple of the block')
 if 'reserved + $2 <= $3' not in files['database-schema.md']: pr.append('reservation statement guard missing in database-schema.md')
 if 'AND NOT sealed' not in files['database-schema.md']: pr.append('reservation statement does not check the sealed flag')
+if 'fingerprint bytea NOT NULL UNIQUE' not in files['database-schema.md']: pr.append('key_usage.fingerprint UNIQUE missing')
+if 'INSERT INTO key_usage (key_id, fingerprint) VALUES ($1, $2)' not in files['database-schema.md']: pr.append('registration statement lacks the fingerprint')
+for fn in ('security-assessment.md','deployment.md','design.md','database-schema.md','requirements.md'):
+    if 'STAGED' not in files[fn]: pr.append(f'{fn} does not describe the STAGED ring status')
+if 'KEY_SEAL_DRAIN_SECONDS' not in files['design.md'] or 'KEY_SEAL_DRAIN_SECONDS' not in files['deployment.md']: pr.append('KEY_SEAL_DRAIN_SECONDS missing')
+if 'fingerprintHistory' not in files['security-assessment.md']: pr.append('ring fingerprintHistory missing')
 if 'AND $2 > 0' not in files['database-schema.md']: pr.append('reservation statement does not reject zero or negative requests')
 if 'ON CONFLICT (key_id) DO UPDATE SET reserved = 1073741824, sealed = true' not in files['database-schema.md']: pr.append('seal statement does not insert a missing row')
 for term,fn in (('highestKeyId','security-assessment.md'),('highestKeyId','deployment.md'),('KEY_USAGE_REFRESH_SECONDS','design.md'),('known-answer','security-assessment.md'),('claim','design.md')):
@@ -243,7 +249,7 @@ for fn in spec:
     for i,l in enumerate(files[fn].splitlines(),1):
         if re.search(r'shard',l,re.I) and not re.search(r'replac|draft|old_key_usage|negative control|removed|without shard|With shards|sharding',l,re.I):
             pr.append(f'{fn}:{i}: shard mentioned as current design: {l.strip()[:90]}')
-for need in ('keys:seal','TS-CONC-21','TS-CONC-22','TS-CONC-23','TS-CONC-24'):
+for need in ('keys:seal','TS-CONC-21','TS-CONC-22','TS-CONC-23','TS-CONC-24','TS-CONC-25','TS-CONC-26','TS-CONC-27'):
     if need not in files['test-strategy.md'] and need not in files['deployment.md']: pr.append(f'{need} missing')
 if 'RD-14' not in files['requirements.md'] or 'CR-9' not in files['requirements.md']: pr.append('RD-14 or CR-9 missing from the register')
 check('C23 key usage design is consistent: one authoritative row per key, CHECK at 2^30, thresholds 2^27 / 2^28 / 2^30, strict statement, terms defined, sharding only mentioned as replaced',pr)
