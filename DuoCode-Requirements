@@ -1,0 +1,1485 @@
+DuoCode
+
+Product Requirements and System Specification
+
+Version: 2.0
+Date: 21 November 2026
+Status: Baseline specification for design and implementation
+Product name: DuoCode (working title)
+Document owner: DuoCode founding collaborators
+Initial deployment: Linux VPS
+Primary development environment: Kiro and GitHub
+
+
+1. Executive Summary
+
+1.1 Product vision
+
+DuoCode is a modern, browser-first social code-breaking game.
+
+Two players challenge each other by creating secret codes and attempting to discover their opponent’s code.
+
+A player creates a game and shares an invitation link. Their opponent opens the link in a browser, chooses a nickname and creates their own secret code.
+
+Both players then attempt to crack each other’s codes.
+
+The game is asynchronous: players do not need to be online simultaneously. They can make their moves whenever convenient.
+
+No mandatory registration, account creation or application installation is required.
+
+DuoCode will initially reproduce the general appeal of a traditional code-breaking game while establishing its own identity, visual design and product experience.
+
+1.2 Product objectives
+
+The primary objectives are:
+
+Deliver an enjoyable two-player social code-breaking experience.
+Make starting a game as simple as sharing a link.
+Develop an independently testable game engine.
+Establish an API-first architecture.
+Ensure the complete game can be played without a graphical interface.
+Support responsive desktop and mobile browser clients.
+Establish an open-source community around the project.
+Preserve the option of commercial licensing.
+Prepare the architecture for future white-label deployments.
+Keep the initial implementation straightforward and economical to operate.
+1.3 Product principles
+
+Simplicity of use.
+No mandatory registration.
+Asynchronous social interaction.
+API-first development.
+Server-authoritative game logic.
+Security and privacy by design.
+Automated testing throughout development.
+Stateless and horizontally scalable architecture.
+Open-source community participation.
+Commercial and white-label extensibility.
+
+2. Product Scope
+
+2.1 Initial product
+
+The initial product will support two players participating in a private invitation-based game.
+
+Each player:
+
+Creates a secret code.
+Attempts to discover the opponent’s code.
+Receives feedback after each guess.
+Can play asynchronously.
+Can view the final result once the game is complete.
+2.2 Intended users
+
+Friends and family.
+Casual puzzle enthusiasts.
+People who enjoy logic and deduction games.
+Clubs and social groups.
+Educational organisations (future).
+Organisations interested in branded games (future).
+2.3 Platform strategy
+
+The product will be developed in stages.
+
+Stage
+
+Product
+
+MVP 1
+
+REST API and game engine
+
+MVP 2
+
+Responsive browser application
+
+Release 1
+
+Social game with invitation links
+
+Release 1.x
+
+PWA and usability improvements
+
+Future
+
+White-label platform
+
+Future
+
+Native Android and iOS applications
+
+The REST API will be the common interface for all future clients.
+
+
+3. Game Rules
+
+3.1 Initial game configuration
+
+The initial game configuration is fixed.
+
+Parameter
+
+Initial value
+
+Players
+
+2
+
+Code positions
+
+4
+
+Available symbols
+
+6
+
+Repeated symbols
+
+Permitted
+
+Maximum guesses
+
+10 per player
+
+Feedback
+
+Exact matches and misplaced matches
+
+Game type
+
+Asynchronous
+
+The visual representation of symbols and feedback must be original to DuoCode.
+
+The implementation must not reproduce another manufacturer’s distinctive board layout, peg artwork, branding or visual presentation.
+
+3.2 Secret codes
+
+Each player independently creates a secret code.
+
+A secret code consists of four positions, each containing one of six available symbols.
+
+Repeated symbols are permitted.
+
+Secret codes must remain private until the game has been completed.
+
+3.3 Guessing
+
+Each player independently attempts to discover the opponent’s secret code.
+
+A guess consists of four symbols.
+
+The server validates the guess and calculates feedback.
+
+The feedback consists of:
+
+Exact match: correct symbol in the correct position.
+Misplaced match: correct symbol in an incorrect position.
+Feedback must not reveal which individual positions are correct or misplaced.
+
+3.4 Feedback calculation
+
+The feedback algorithm must correctly handle duplicate symbols.
+
+The algorithm must count exact matches first, then determine misplaced matches from the remaining unmatched symbols.
+
+It must never count a symbol more times than it occurs in either code.
+
+The algorithm must be independently tested against a separate reference implementation.
+
+3.5 Attempts
+
+Each player has a maximum of ten guesses.
+
+Every valid submitted guess consumes one attempt.
+
+Invalid requests must not consume attempts.
+
+A player who discovers the opponent’s code has solved their challenge.
+
+A player who uses all ten attempts without solving has exhausted their attempts.
+
+3.6 Game completion
+
+The game remains active until both players have either:
+
+Solved the opponent’s code; or
+Exhausted their available attempts.
+One player’s completion must not prematurely terminate the other player’s challenge.
+
+3.7 Winner determination
+
+The outcome is determined as follows:
+
+Player A
+
+Player B
+
+Result
+
+Solves
+
+Solves
+
+Fewer guesses wins
+
+Solves
+
+Exhausts attempts
+
+Player A wins
+
+Exhausts attempts
+
+Solves
+
+Player B wins
+
+Exhausts attempts
+
+Exhausts attempts
+
+Draw
+
+If both players solve in the same number of attempts, the result is a draw.
+
+If neither player solves, the result is a draw.
+
+The final result must include both players’ outcomes and the number of guesses used.
+
+3.8 Results
+
+Once the game is complete, the server may reveal:
+
+Both secret codes.
+Both players’ guesses.
+Feedback for each guess.
+Number of attempts used.
+Whether each player solved their challenge.
+Final result.
+Game completion time.
+Secret codes must never be disclosed before the game reaches a completed state.
+
+
+4. Functional Requirements
+
+4.1 Game management
+
+FR-001 — Create game
+
+The system shall allow a player to create a new game.
+
+FR-002 — Unique game identifier
+
+Every game shall have a unique, non-guessable identifier.
+
+FR-003 — Invitation link
+
+The system shall generate a secure invitation mechanism that can be shared with another player.
+
+FR-004 — Join game
+
+A second player shall be able to join using a valid invitation.
+
+FR-005 — Player identity
+
+Players shall be able to choose a display nickname without creating a permanent account.
+
+FR-006 — Secret code submission
+
+Each player shall be able to submit their secret code.
+
+FR-007 — Game activation
+
+The game shall become active when both players have joined and submitted valid secret codes.
+
+FR-008 — Submit guess
+
+A player shall be able to submit a guess against the opponent’s secret code.
+
+FR-009 — Feedback
+
+The server shall calculate and return the appropriate feedback.
+
+FR-010 — Game status
+
+Players shall be able to retrieve the current game status and their own progress.
+
+FR-011 — Results
+
+The system shall calculate and publish the final result when both players have completed their challenges.
+
+FR-012 — Rematch
+
+The system shall support creating a new game based on a completed game.
+
+FR-013 — Game history
+
+The system shall retain the information required to reconstruct the game and its result.
+
+FR-014 — Game expiry
+
+The system shall support configurable expiry of abandoned games.
+
+4.2 Player management
+
+FR-015 — Independent players
+
+Each player shall have a separate identity within a game.
+
+FR-016 — Player authorisation
+
+Every player action shall be associated with the correct player identity.
+
+FR-017 — Player isolation
+
+One player shall not be able to impersonate the other player.
+
+FR-018 — No mandatory accounts
+
+The initial release shall not require permanent user accounts.
+
+4.3 Game integrity
+
+FR-019 — Server authority
+
+The server shall be authoritative for all game rules, feedback and state transitions.
+
+FR-020 — Attempt validation
+
+The server shall enforce the maximum number of guesses.
+
+FR-021 — Invalid guesses
+
+Invalid guesses shall be rejected without modifying game state.
+
+FR-022 — Completed games
+
+Completed games shall not accept further guesses.
+
+FR-023 — Duplicate request protection
+
+The API shall protect against accidental duplicate submissions caused by client retries.
+
+FR-024 — Concurrent actions
+
+Simultaneous requests shall not cause inconsistent game state or incorrect attempt counts.
+
+
+5. Non-functional Requirements
+
+5.1 Performance
+
+Normal API operations should respond within 500 ms at the 95th percentile under the initial expected load.
+Game operations should not require long-lived connections.
+The system should support multiple concurrent games.
+Performance shall be measured rather than assumed.
+5.2 Availability
+
+The service should be suitable for continuous operation.
+Temporary service interruptions must not corrupt game state.
+Database transactions shall protect critical game operations.
+Failed requests must not leave partially updated games.
+5.3 Security
+
+All external communications shall use HTTPS.
+Player access tokens shall be cryptographically secure.
+Invitation tokens shall be sufficiently random to prevent guessing.
+Tokens shall be stored securely, preferably as hashes where appropriate.
+Secret codes shall not appear in unauthorised API responses.
+Inputs shall be validated server-side.
+Rate limiting shall protect public endpoints.
+Administrative access shall be separated from player access.
+Security-sensitive information shall not appear in ordinary application logs.
+5.4 Privacy
+
+No mandatory personal information shall be collected.
+Nicknames shall not require real identities.
+Personal information shall not be exposed to opponents.
+Data retention and deletion policies shall be documented.
+The application shall be designed with applicable UK GDPR requirements in mind.
+5.5 Accessibility
+
+Future browser interfaces shall:
+
+Support keyboard navigation.
+Use sufficient colour contrast.
+Avoid relying exclusively on colour to communicate feedback.
+Provide accessible labels for symbols and game actions.
+Support screen readers.
+Use responsive layouts.
+5.6 Maintainability
+
+Game logic shall be independent of HTTP handling.
+API contracts shall be documented.
+Database migrations shall be version controlled.
+Automated tests shall run in CI.
+Development and production configuration shall be separated.
+
+6. Architecture
+
+6.1 Architectural approach
+
+DuoCode shall use a modular, API-first architecture.
+
+The initial architecture shall be deliberately simple, avoiding unnecessary distributed systems.
+
+6.2 Technology choices
+
+Component
+
+Technology
+
+Backend language
+
+TypeScript
+
+Runtime
+
+Deno
+
+HTTP framework
+
+Oak
+
+API
+
+REST
+
+API specification
+
+OpenAPI 3.1
+
+Database
+
+PostgreSQL
+
+Deployment
+
+Docker Compose
+
+Operating system
+
+Linux
+
+Reverse proxy
+
+Caddy or Nginx
+
+API testing
+
+curl and Postman
+
+Automated tests
+
+Deno test framework
+
+Version control
+
+Git / GitHub
+
+Development assistance
+
+Kiro and GitHub Copilot
+
+Technology choices should be reviewed during detailed design, but changes should require an explicit design decision.
+
+6.3 Logical architecture
+
+The system shall be divided into the following logical components:
+
+Game engine.
+Game management service.
+Player and invitation management.
+Guess and feedback processing.
+Results management.
+REST API.
+Persistence layer.
+Automated testing and simulation tools.
+The game engine shall have no dependency on Oak, HTTP or the database.
+
+It must be independently executable and testable.
+
+6.4 Stateless services
+
+Application instances shall be stateless.
+
+Game state and player information shall be persisted in PostgreSQL.
+
+The architecture shall permit multiple application instances without requiring session affinity.
+
+6.5 Database
+
+PostgreSQL shall be the authoritative persistent store.
+
+The initial logical data model shall include:
+
+Entity
+
+Purpose
+
+Games
+
+Game configuration and lifecycle
+
+Players
+
+Player identities within a game
+
+SecretCodes
+
+Secret codes associated with players
+
+Guesses
+
+Submitted guesses and feedback
+
+GameResults
+
+Final game outcome
+
+Appropriate foreign keys, indexes and constraints shall be defined.
+
+Game operations involving guesses and attempt counts shall use database transactions and appropriate concurrency controls.
+
+6.6 API independence
+
+The complete game shall be playable using REST API calls alone.
+
+The API shall not depend on a browser or frontend implementation.
+
+Future Android, iOS and other clients shall use the same API.
+
+
+7. REST API Requirements
+
+7.1 API conventions
+
+The API shall:
+
+Use versioned endpoints.
+Use JSON request and response bodies.
+Use appropriate HTTP status codes.
+Provide consistent error responses.
+Validate all incoming requests.
+Document all operations in OpenAPI 3.1.
+Avoid exposing internal database structures.
+Base path:
+
+/api/v1/
+
+7.2 Initial API operations
+
+The following represents the initial logical API contract. Exact paths, methods and payload schemas shall be finalised during detailed design.
+
+Operation
+
+Purpose
+
+Create game
+
+Start a new game
+
+Join game
+
+Join an existing game
+
+Submit secret code
+
+Register a player’s secret code
+
+Retrieve game status
+
+Obtain current game state
+
+Submit guess
+
+Make a code-breaking attempt
+
+Retrieve player progress
+
+Obtain authorised player progress
+
+Retrieve results
+
+Obtain completed game results
+
+Create rematch
+
+Start another game
+
+7.3 API authentication
+
+The API shall use separate player access credentials.
+
+A player must be authorised for every operation relating to their game.
+
+The API shall distinguish between:
+
+Invitation credentials.
+Player access credentials.
+Administrative credentials.
+The detailed token lifecycle shall be specified in the design document.
+
+7.4 Error handling
+
+The API shall return consistent errors for:
+
+Invalid game identifiers.
+Invalid invitations.
+Invalid player credentials.
+Invalid code submissions.
+Invalid guesses.
+Attempts exhausted.
+Game not yet active.
+Game already completed.
+Unauthorised operations.
+Expired games.
+Duplicate or conflicting requests.
+7.5 OpenAPI
+
+An OpenAPI 3.1 document shall describe the complete API.
+
+The specification shall be maintained in the repository.
+
+It shall be used to support:
+
+API documentation.
+Postman collection generation.
+Contract testing.
+Future client generation.
+Independent API review.
+
+8. API-First MVP
+
+8.1 MVP definition
+
+The first MVP shall consist entirely of the backend.
+
+There shall be no graphical user interface in MVP 1.
+
+The system must support a complete game using two independent API clients.
+
+Clients may use:
+
+curl.
+Postman.
+A command-line test client.
+8.2 MVP acceptance criteria
+
+The first MVP is complete when:
+
+A player can create a game.
+A second player can join using an invitation.
+Both players can submit secret codes.
+The game becomes active.
+Both players can independently submit guesses.
+Feedback is calculated correctly.
+Game progress can be retrieved.
+Both players can complete their challenges.
+The server calculates the correct outcome.
+Final results are available.
+Secret codes remain protected throughout the game.
+All operations can be exercised without a web application.
+8.3 Postman collection
+
+A Postman collection shall be included in the repository.
+
+It shall contain:
+
+Game creation.
+Player joining.
+Secret code submission.
+Guess submission.
+Status retrieval.
+Results retrieval.
+Error scenarios.
+Complete two-player game lifecycle.
+Postman environment variables shall be used for game identifiers and player credentials.
+
+Example environment files shall not contain real production credentials.
+
+8.4 curl examples
+
+The documentation shall include curl examples showing how to play a complete game.
+
+The examples shall use separate credentials for Player A and Player B.
+
+
+9. Automated Testing and Game Simulation
+
+9.1 Testing strategy
+
+Automated testing is a core development requirement, not an optional final activity.
+
+Testing shall cover:
+
+Unit tests.
+Game engine tests.
+API integration tests.
+Database tests.
+Security tests.
+Complete game lifecycle tests.
+Automated game simulation.
+Load and concurrency tests.
+9.2 Game engine unit tests
+
+The game engine shall be tested independently of the API.
+
+Tests shall cover:
+
+Exact matches.
+Misplaced matches.
+No matches.
+All positions matching.
+Duplicate symbols in the secret code.
+Duplicate symbols in guesses.
+Mixed duplicate scenarios.
+Invalid code lengths.
+Invalid symbols.
+Attempt limits.
+Game completion.
+Winner determination.
+The feedback algorithm shall be tested against an independent reference implementation.
+
+The reference implementation must not reuse the production feedback calculation.
+
+9.3 API integration tests
+
+Integration tests shall exercise the complete game lifecycle.
+
+Tests shall use separate player credentials.
+
+They shall cover:
+
+Successful game creation.
+Successful joining.
+Code submission.
+Game activation.
+Guess submission.
+Feedback.
+Player progress.
+Game completion.
+Final results.
+Rematches.
+9.4 Negative tests
+
+The test suite shall verify that:
+
+A third player cannot join a full game.
+A player cannot access another player’s credentials.
+A player cannot retrieve the opponent’s secret code prematurely.
+A player cannot submit guesses against their own code.
+Invalid guesses do not consume attempts.
+Attempts cannot exceed the configured limit.
+Completed games reject further guesses.
+Invalid invitation tokens are rejected.
+Expired games cannot be modified.
+Repeated requests do not duplicate guesses.
+Concurrent submissions cannot corrupt game state.
+9.5 Automated game simulator
+
+A dedicated game simulation tool shall be developed.
+
+The simulator shall communicate with the application exclusively through the public REST API.
+
+It shall not bypass API validation or manipulate the database directly.
+
+Simulation requirements
+
+SIM-001 — Support configurable numbers of games.
+
+SIM-002 — Support configurable concurrency.
+
+SIM-003 — Create two independent player identities per game.
+
+SIM-004 — Support deterministic random seeds.
+
+SIM-005 — Implement multiple player strategies.
+
+SIM-006 — Verify feedback against an independent reference implementation.
+
+SIM-007 — Verify game-state transitions.
+
+SIM-008 — Detect unexpected API responses.
+
+SIM-009 — Record failed games for reproduction.
+
+SIM-010 — Produce machine-readable JSON output.
+
+SIM-011 — Produce a human-readable test summary.
+
+SIM-012 — Run as an independent command-line application.
+
+Player strategies
+
+The simulator should initially support:
+
+Random guessing.
+Systematic guessing.
+Logic-based code-breaking.
+The strategies should be independently implemented.
+
+Simulation metrics
+
+The simulator shall report:
+
+Games started.
+Games completed.
+Wins and draws.
+Average guesses.
+Maximum guesses.
+API errors.
+Invalid state transitions.
+Response latency.
+Concurrency failures.
+Unexpected game outcomes.
+Deterministic replay
+
+Every simulation shall support a reproducible random seed.
+
+A failed game shall be identifiable by its seed and game number.
+
+The simulator shall permit the same game to be replayed independently.
+
+Example:
+
+deno task simulate \
+  --games 1000 \
+  --seed 12345 \
+  --concurrency 20
+The exact command-line interface shall be finalised during implementation.
+
+9.6 Load and concurrency testing
+
+Load tests shall exercise:
+
+Multiple games being created simultaneously.
+Multiple players joining simultaneously.
+Concurrent guess submissions.
+Database transaction handling.
+API response times.
+Application resource consumption.
+The system shall not lose or duplicate valid game operations under supported concurrency.
+
+9.7 Continuous integration
+
+Automated tests shall be integrated into GitHub Actions.
+
+A pull request shall trigger:
+
+Formatting checks.
+Static analysis.
+Type checking.
+Unit tests.
+API integration tests.
+Relevant security checks.
+Build verification.
+Simulation and larger load tests may run as separate CI jobs.
+
+
+10. Web Application Requirements
+
+The web application is deliberately excluded from MVP 1.
+
+It shall be developed after the backend and API have been independently validated.
+
+10.1 Browser application
+
+The web application shall be:
+
+Responsive.
+Mobile-first.
+Compatible with modern desktop browsers.
+Compatible with modern mobile browsers.
+Usable without installation.
+Designed around simple invitation-based play.
+10.2 User journeys
+
+Create game
+
+Player visits the DuoCode website.
+Player chooses a nickname.
+Player creates a new game.
+Player chooses a secret code.
+Application provides a unique invitation link.
+Player shares the invitation.
+Join game
+
+Opponent opens the invitation link.
+Opponent chooses a nickname.
+Opponent creates a secret code.
+Game becomes active.
+Play game
+
+Player selects a guess.
+Application submits the guess.
+Server calculates feedback.
+Application displays the result.
+Player can return later and continue.
+Results
+
+Both players complete their challenges.
+Application displays the final outcome.
+Both secret codes are revealed.
+Players can share their results.
+Players can initiate a rematch.
+10.3 Progressive Web App
+
+The application may support optional PWA installation.
+
+PWA installation shall not be required for normal gameplay.
+
+10.4 User experience
+
+The interface shall use an original DuoCode visual identity.
+
+It shall not reproduce the distinctive branding, artwork or board presentation of another commercial game.
+
+Feedback shall not rely exclusively on colour.
+
+
+11. White-label and Future Multi-tenant Architecture
+
+11.1 Product strategy
+
+DuoCode shall be designed with future white-label opportunities in mind.
+
+White-label functionality is a product strategy and an architectural constraint, not an MVP feature.
+
+The initial release shall operate as a single-tenant application.
+
+11.2 Architectural separation
+
+The architecture shall maintain separation between:
+
+Core game engine.
+Game management and API.
+Presentation layer.
+Branding and visual configuration.
+Tenant configuration.
+The core game engine shall not contain presentation-specific assumptions.
+
+11.3 Future white-label capabilities
+
+Future deployments may support:
+
+Custom product names.
+Customer logos.
+Custom colour schemes.
+Custom typography.
+Custom domains and subdomains.
+Custom welcome screens.
+Configurable game rules.
+Additional customer-specific functionality.
+Independent hosting.
+Centrally managed hosting.
+11.4 Multi-tenancy readiness
+
+The initial architecture shall not prevent future multi-tenant operation.
+
+Future tenant support shall provide:
+
+Tenant identification.
+Tenant-specific configuration.
+Logical isolation of tenant data.
+Tenant-specific branding.
+Tenant-specific game configuration.
+Server-side tenant validation.
+The initial implementation shall not introduce unnecessary multi-tenant infrastructure.
+
+11.5 White-label commercial model
+
+White-label deployments may be offered under a separate commercial licence.
+
+Potential customers include:
+
+Clubs and societies.
+Schools and educational organisations.
+Businesses.
+Event organisers.
+Promotional and marketing organisations.
+
+12. Scalability and Deployment
+
+12.1 Initial deployment
+
+The initial deployment shall use a single Linux VPS.
+
+The deployment shall use Docker Compose.
+
+PostgreSQL shall initially operate as the authoritative database.
+
+12.2 Scalability requirements
+
+SCALE-001 — Stateless application architecture.
+
+SCALE-002 — Horizontal application scaling shall be possible.
+
+SCALE-003 — PostgreSQL shall remain the authoritative persistent store.
+
+SCALE-004 — Redis may be introduced when justified by measured requirements.
+
+SCALE-005 — The architecture shall support reverse proxies and load balancing.
+
+SCALE-006 — Background processing shall be possible without changing the core game engine.
+
+SCALE-007 — Application and database monitoring shall be supported.
+
+SCALE-008 — Deployment shall remain Docker-compatible.
+
+SCALE-009 — Load and concurrency testing shall be available.
+
+SCALE-010 — Avoid unnecessary dependence on a particular cloud provider.
+
+SCALE-011 — The application shall handle temporary infrastructure failures gracefully.
+
+SCALE-012 — Scaling shall be incremental and based on measured demand.
+
+12.3 Real-time communication
+
+The initial implementation shall use ordinary REST requests and polling where required.
+
+WebSockets are not required for the asynchronous game model.
+
+12.4 Infrastructure monitoring
+
+The system should expose metrics for:
+
+Games created.
+Active games.
+Completed games.
+Daily active players where measurable without unnecessary personal tracking.
+API requests.
+Response latency.
+Database utilisation.
+Application resource consumption.
+Hosting costs.
+12.5 Deferred infrastructure
+
+The following are not required for the initial release:
+
+Kubernetes.
+Microservices.
+Multi-region deployment.
+Mandatory Redis.
+Distributed event streaming.
+Complex service meshes.
+
+13. Licensing and Intellectual Property
+
+13.1 Community licence
+
+The intended public software licence is:
+
+GNU Affero General Public License v3.0 only (AGPL-3.0-only).
+
+The licence shall apply to the community distribution of DuoCode.
+
+The project shall include the complete AGPL 3.0 licence text and appropriate copyright notices.
+
+13.2 Community rights
+
+The community licence shall permit use, modification and distribution, including commercial use, subject to AGPL requirements.
+
+Where modified software is offered as a network service, the applicable source-code disclosure requirements of AGPL shall be respected.
+
+13.3 Dual licensing
+
+The architecture and ownership arrangements should preserve the possibility of offering a separate proprietary commercial licence.
+
+Potential commercial licensing may permit:
+
+Closed-source modifications.
+Proprietary integrations.
+Commercial white-label deployments.
+Commercial hosted services without AGPL obligations applying to the separately licensed use.
+Commercial licensing shall require appropriate rights from all relevant copyright holders.
+
+13.4 Contributor arrangements
+
+Before accepting external contributions, the project shall establish contribution terms.
+
+Contributors must have the right to submit their work.
+
+The project shall obtain the necessary rights to distribute contributions under AGPL and, where expressly agreed, offer them under a separate commercial licence.
+
+The project must not assume that an AGPL contribution automatically provides unrestricted commercial relicensing rights.
+
+13.5 Product branding
+
+DuoCode is a working title.
+
+Before public launch, the project owners shall investigate:
+
+UK trademark availability.
+EU trademark availability.
+Relevant international trademark registrations.
+Domain name availability.
+Google Play naming conflicts.
+Apple App Store naming conflicts.
+The product shall use original branding, artwork, symbols and visual design.
+
+The project shall not reproduce another game’s protected branding or distinctive visual assets.
+
+13.6 Ownership and governance
+
+The two founding collaborators intend to develop DuoCode as equal partners.
+
+Their separate collaboration and intellectual property agreement shall define:
+
+Ownership of project IP.
+Assignment of future contributions.
+Authority to grant commercial licences.
+Revenue arrangements.
+Future company formation.
+Withdrawal and succession.
+Ownership of branding and domains.
+This specification does not replace that agreement.
+
+
+14. Development Environment and Repository
+
+14.1 Repository
+
+The initial repository shall be:
+
+duocode
+
+The repository shall initially remain private while requirements, architecture and ownership arrangements are being established.
+
+14.2 Suggested structure
+
+duocode/
+│
+├── .github/
+│   └── workflows/
+│       └── ci.yml
+│
+├── .kiro/
+│   └── specs/
+│       └── duocode/
+│           ├── requirements.md
+│           ├── design.md
+│           └── tasks.md
+│
+├── backend/
+│   ├── src/
+│   ├── tests/
+│   └── deno.json
+│
+├── tools/
+│   ├── game-simulator/
+│   └── api-client/
+│
+├── postman/
+│   ├── collection.json
+│   └── environments/
+│
+├── openapi/
+│   └── openapi.yaml
+│
+├── docs/
+│   ├── architecture.md
+│   ├── API.md
+│   ├── security.md
+│   ├── testing.md
+│   └── licensing.md
+│
+├── web/
+│   └── [future web application]
+│
+├── deployment/
+│   ├── docker-compose.yml
+│   └── configuration/
+│
+├── README.md
+├── CONTRIBUTING.md
+├── LICENSE
+├── NOTICE
+└── .gitignore
+The exact structure may be refined during design.
+
+14.3 Development practices
+
+Use Git branches for feature development.
+Protect the main branch.
+Use pull requests for significant changes.
+Require review for architectural and security-sensitive changes.
+Maintain automated CI.
+Keep secrets out of source control.
+Maintain versioned database migrations.
+Keep OpenAPI and Postman artefacts in the repository.
+
+15. Development Methodology
+
+15.1 Development approach
+
+The project shall use an incremental, test-driven development approach.
+
+Requirements, design and implementation tasks shall be maintained in Kiro.
+
+GitHub shall provide source control, collaboration, issues and review.
+
+GitHub Copilot shall provide an independent review of requirements, design and code.
+
+The founding collaborators retain responsibility for product and architectural decisions.
+
+15.2 Development phases
+
+Phase 1 — Requirements and architecture
+
+Review this specification.
+Identify ambiguities.
+Produce detailed design.
+Define game state transitions.
+Define database schema.
+Produce OpenAPI 3.1 contract.
+Review security architecture.
+Produce implementation tasks.
+Phase 2 — Independent game engine
+
+Implement code representation.
+Implement validation.
+Implement feedback calculation.
+Implement winner determination.
+Create comprehensive unit tests.
+Compare against an independent reference implementation.
+Phase 3 — REST API
+
+Implement Deno/Oak backend.
+Implement PostgreSQL persistence.
+Implement player and invitation handling.
+Implement game lifecycle operations.
+Implement authentication and authorisation.
+Implement transaction and concurrency controls.
+Phase 4 — API testing and simulation
+
+Produce Postman collection.
+Produce curl examples.
+Implement integration tests.
+Implement negative tests.
+Implement automated game simulator.
+Implement deterministic replay.
+Conduct load and concurrency tests.
+Phase 5 — Backend MVP acceptance
+
+Demonstrate that two independent API clients can complete an entire game.
+
+Complete automated testing and security review.
+
+Phase 6 — Responsive web application
+
+Develop mobile-first interface.
+Implement game creation.
+Implement invitation and joining.
+Implement guessing interface.
+Implement results and rematches.
+Test desktop and mobile browsers.
+Phase 7 — PWA and beta
+
+Add optional PWA installation.
+Conduct closed beta.
+Collect feedback.
+Improve usability and reliability.
+Prepare public release.
+Phase 8 — Future commercial development
+
+Evaluate white-label requirements.
+Introduce tenant management where justified.
+Develop commercial licensing arrangements.
+Consider managed hosting.
+Consider native clients.
+
+16. Explicitly Out of Scope for Initial Release
+
+The following features are excluded from the initial release:
+
+Mandatory user accounts.
+User registration and password management.
+Social networking features.
+Public chat.
+Public matchmaking.
+Leaderboards.
+Tournaments.
+Subscriptions.
+Advertising.
+In-app purchases.
+AI opponents.
+Native Android applications.
+Native iOS applications.
+Multi-tenant infrastructure.
+White-label administration.
+Custom customer domains.
+Enterprise management.
+Kubernetes.
+Microservices.
+Multi-region deployment.
+These may be reconsidered as future enhancements.
+
+
+17. Definition of Done
+
+17.1 Backend MVP
+
+The backend MVP shall be considered complete when:
+
+The game engine is independently implemented and tested.
+The REST API implements the complete game lifecycle.
+Two independent players can play through separate API sessions.
+Secret codes remain private until game completion.
+Duplicate-symbol feedback is correct.
+Attempt limits are enforced.
+Game-state transitions are validated.
+Concurrent requests are handled safely.
+PostgreSQL persistence is implemented.
+OpenAPI 3.1 documentation is available.
+A Postman collection is available.
+curl examples are documented.
+Automated integration tests pass.
+The simulator can run complete games.
+Deterministic simulation replay works.
+CI executes the required tests.
+Deployment works on the development Linux environment.
+17.2 Browser release
+
+The initial browser release shall be considered complete when:
+
+A player can create and share a game.
+A second player can join without registration.
+Both players can create secret codes.
+Both players can play asynchronously.
+Feedback is clear and accessible.
+Game progress survives browser closure.
+Final results are correctly presented.
+Rematches are supported.
+Desktop and mobile browsers are supported.
+No installation is required.
+
+18. Instructions to Kiro
+
+Treat this document as the baseline product requirements specification for DuoCode.
+
+Do not begin implementation immediately.
+
+First undertake a requirements and architecture review.
+
+Produce the following artefacts:
+
+requirements.md — refined requirements and acceptance criteria.
+design.md — detailed system architecture and component design.
+tasks.md — phased implementation tasks.
+openapi.yaml — OpenAPI 3.1 API contract.
+Database schema and migration strategy.
+Game state transition specification.
+Security and threat assessment.
+Automated testing strategy.
+Game simulator design.
+Deployment design.
+Mandatory design constraints
+
+The first MVP is backend-only.
+The complete game must be playable using curl or Postman.
+The game engine must be independent of the API framework.
+Feedback calculation must be independently verifiable.
+PostgreSQL is the authoritative store.
+Application services must be stateless.
+API security must protect secret codes and player identities.
+Automated simulation must use the public REST API.
+Simulation must support deterministic replay.
+OpenAPI 3.1 is the API contract.
+AGPL-3.0-only is the intended community licence.
+Future dual licensing must remain possible.
+White-label capability is a future product objective and architectural constraint, not an MVP implementation requirement.
+Original branding and visual design must be used.
+Review expectations
+
+Identify:
+
+Ambiguous requirements.
+Conflicting requirements.
+Missing edge cases.
+Security weaknesses.
+Data integrity risks.
+Concurrency issues.
+Unnecessary complexity.
+Future architectural limitations.
+Do not silently make significant product decisions.
+
+Present unresolved questions and proposed resolutions to the project owners.
+
+Do not implement speculative features simply because they may be useful in the future.
+
+The immediate goal is to deliver a robust, thoroughly tested, API-only two-player game.
+
+
+19. Outstanding Decisions
+
+The following items require resolution during detailed design or before public release.
+
+Decision
+
+Status
+
+Final DuoCode trademark clearance
+
+Outstanding
+
+Final visual identity and symbol design
+
+Outstanding
+
+Exact API endpoint and payload definitions
+
+Design phase
+
+Player token lifecycle
+
+Design phase
+
+Invitation expiry and game retention periods
+
+Design phase
+
+Database encryption and secret-code protection approach
+
+Design phase
+
+Rematch behaviour and token handling
+
+Design phase
+
+Public contribution agreement
+
+Before external contributions
+
+Commercial dual-licensing terms
+
+Before commercial licensing
+
+Future company arrangements
+
+If commercialisation proceeds
+
+Future white-label tenancy model
+
+Deferred
+
+
+20. Closing Statement
+
+DuoCode is intended to be a small, enjoyable social game built on a sound technical foundation.
+
+The initial objective is deliberately modest: create a complete two-player game that works reliably through a REST API.
+
+The project should demonstrate good engineering practices from the beginning, including independent game logic, automated testing, reproducible simulation, security and clear API contracts.
+
+The architecture should leave room for future development without making the initial implementation unnecessarily complicated.
+
+The long-term opportunity is to grow DuoCode from a simple social game into an extensible code-breaking platform, with community development, commercial licensing and potential white-label deployments.
+
+Build the game first. Prove the engine. Validate the API. Then build the experience.
+
+
+Sent from my iPhone

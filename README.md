@@ -15,7 +15,7 @@ Project status
 
 The first development milestone is a fully playable backend, accessible through its REST API. The game engine, persistence layer, API and automated test infrastructure will be validated before development of the graphical interface begins.
 
-The project is currently under development. Product naming, visual identity and commercial arrangements remain subject to review.
+The project is currently at the specification stage: requirements, architecture, API contract, database schema and security assessment are awaiting owner approval, and no application code has been written yet. Product naming, visual identity and commercial arrangements remain subject to review.
 
 The game
 
@@ -281,14 +281,17 @@ Invalid requests must not consume attempts.
 Game-state transitions must be controlled by the server.
 Simultaneous requests must not corrupt game state.
 Duplicate submissions must not result in repeated actions.
-Player and invitation tokens must be protected.
+Game access tokens, invitation tokens and rematch capabilities are separate, random and stored only as hashes. A lost token cannot be recovered, because there are no accounts.
+Secret codes and guesses are encrypted at rest (AES-256-GCM) with keys held outside the database and its backups, and are never written to logs or error responses.
+Rate limits are shared across application instances through PostgreSQL, with coarse per-IP limits at the proxy.
+Guess submissions require an Idempotency-Key, so retries never consume extra attempts. Token rotation is idempotent too, so a lost response does not lock a player out.
 API access must not rely on client-side validation.
-Data retention and game expiry policies must be defined.
+Games expire and are deleted automatically: unjoined 7 days, in progress 30 days, completed 180 days (configurable, subject to owner approval).
 The implementation should follow secure development practices appropriate to a public-facing web service.
 
 Repository structure
 
-The proposed repository layout is:
+The repository layout is:
 
 duocode/
 ├── .github/
@@ -296,30 +299,34 @@ duocode/
 ├── .kiro/
 │   └── specs/
 │       └── duocode/
-├── docs/
-├── src/
-│   ├── api/
-│   ├── game/
-│   ├── players/
-│   ├── games/
-│   ├── results/
-│   ├── persistence/
-│   └── shared/
-├── tests/
-│   ├── unit/
-│   ├── integration/
-│   ├── api/
-│   ├── security/
-│   └── simulation/
-├── simulator/
+├── backend/
+│   ├── migrations/
+│   ├── src/
+│   │   ├── engine/
+│   │   ├── services/
+│   │   ├── persistence/
+│   │   ├── http/
+│   │   └── config/
+│   ├── tests/
+│   └── deno.json
+├── tools/
+│   ├── simulator/
+│   └── api-client/
+├── openapi/
+│   └── openapi.yaml
 ├── postman/
-├── migrations/
-├── docker/
-├── deno.json
-├── deno.lock
-├── compose.yaml
+├── docs/
+├── deployment/
+├── README.md
+├── CONTRIBUTING.md
 ├── LICENSE
-└── README.md
+├── NOTICE
+└── .gitignore
+
+backend/ holds the API and application implementation. tools/ holds development and operational tools, including the game simulator in tools/simulator/. openapi/ holds the OpenAPI specification. docs/ holds supporting documentation.
+
+A frontend/ directory will be added when browser application development begins.
+
 The structure may evolve as the implementation develops, but separation of the game engine, API, persistence and testing tools should be maintained.
 
 Development workflow
@@ -336,6 +343,10 @@ Submit changes through GitHub pull requests.
 Use independent review, including GitHub Copilot, to identify omissions and potential problems.
 Run automated checks through CI.
 Review and approve changes before merging.
+The specification set is in .kiro/specs/duocode/ (requirements, design, database schema, state machine, security assessment, test strategy, simulator design, deployment and tasks), with the API contract in openapi/openapi.yaml. No implementation starts until the owners have approved the specification (Phase 1 in tasks.md).
+
+GitHub Actions (.github/workflows/ci.yml) lints the OpenAPI document and checks the repository, and will run the backend checks and tests once the backend exists. Instructions for GitHub Copilot are in .github/copilot-instructions.md.
+
 Kiro is used to support requirements, design and implementation. Independent reviews provide an additional check on architecture, security, testing and maintainability.
 
 Important design decisions should be documented so that the project remains understandable and maintainable by both collaborators.

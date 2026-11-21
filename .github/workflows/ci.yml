@@ -1,0 +1,138 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# CI per .kiro/specs/duocode/test-strategy.md section 12.
+# Spec jobs run now. Backend jobs run only once backend/deno.json exists (Phase 2, after Phase 1 sign-off).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  openapi:
+    name: OpenAPI lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npx --yes @redocly/cli@1 lint openapi/openapi.yaml
+
+  repo-hygiene:
+    name: Repository hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No secrets or key material committed
+        run: |
+          if git ls-files | grep -E '(^|/)(\.env|secrets/.*|.*\.pem|.*\.key)$' | grep -vE '\.example'; then
+            echo "Secret-like files are tracked"; exit 1
+          fi
+      - name: No compiled binaries committed
+        run: |
+          if git ls-files | grep -E '\.(exe|dll|so|dylib|o|a|class|jar|wasm)$'; then
+            echo "Binary artefacts are tracked"; exit 1
+          fi
+
+  check:
+    name: Format, lint, type check
+    runs-on: ubuntu-latest
+    if: ${{ hashFiles('backend/deno.json') != '' }}
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: deno fmt --check
+      - run: deno lint
+      - run: deno check src/main.ts
+      - name: Engine import boundary
+        run: |
+          if grep -rEn "from ['\"](npm:|jsr:|https?:|node:|@oak)|crypto\.subtle|Deno\." src/engine; then
+            echo "src/engine must stay pure"; exit 1
+          fi
+      - name: Math.random is banned in backend
+        run: |
+          if grep -rn "Math.random" src; then exit 1; fi
+      - name: SPDX headers
+        run: |
+          missing=$(grep -rL "SPDX-License-Identifier: AGPL-3.0-only" --include=*.ts src tests || true)
+          if [ -n "$missing" ]; then echo "$missing"; exit 1; fi
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    if: ${{ hashFiles('backend/deno.json') != '' }}
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: duocode
+          POSTGRES_PASSWORD: duocode_ci
+          POSTGRES_DB: duocode_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U duocode" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://duocode:duocode_ci@localhost:5432/duocode_test
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Generate throwaway test key ring
+        run: |
+          mkdir -p "$RUNNER_TEMP/secrets"
+          k() { head -c 32 /dev/urandom | base64; }
+          printf '{"active":1,"keys":{"1":"%s"}}' "$(k)" > "$RUNNER_TEMP/secrets/keyring.json"
+          echo "CODE_KEYRING_FILE=$RUNNER_TEMP/secrets/keyring.json" >> "$GITHUB_ENV"
+      - run: deno task migrate
+      - run: deno task test --coverage=coverage
+
+  simulate:
+    name: Simulation
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: ${{ hashFiles('tools/simulator/deno.json') != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Run 200 games against the built stack
+        run: |
+          docker compose -f deployment/docker-compose.ci.yml up -d --build --wait
+          cd tools/simulator
+          deno task simulate --games 200 --seed 12345 --concurrency 10 \
+            --strategy mixed --retry-rate 0.1 --rotate-rate 0.02 --base-url http://localhost:8080/api/v1
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+
+  build:
+    name: Container build
+    runs-on: ubuntu-latest
+    if: ${{ hashFiles('backend/Dockerfile') != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f backend/Dockerfile -t duocode-backend:ci .
