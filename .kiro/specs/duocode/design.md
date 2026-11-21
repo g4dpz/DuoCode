@@ -60,7 +60,7 @@ duocode/
 │   │   ├── persistence/            repositories, vault, rate limiter, migration runner
 │   │   ├── http/                   Oak apps (public and admin), routes, middleware, validation
 │   │   ├── config/                 typed configuration
-│   │   ├── tasks/                  cleanup, reencrypt, keys:generate, keys:verify
+│   │   ├── tasks/                  cleanup, reencrypt, keys:generate, keys:verify, keys:seal
 │   │   └── main.ts
 │   └── tests/                      unit, engine, reference, integration, security, concurrency
 ├── tools/
@@ -207,7 +207,7 @@ The order is total and the same in every code path:
 
 | Level | Lock | Held by |
 |---|---|---|
-| L0 | Rate-limit bucket rows (IP and player) and `key_usage` shard rows | Their own autocommit statements on separate connections, run before the request transaction (a reservation is only ever needed again when the in-memory allowance runs out, which the operation checks before `BEGIN`). Released at once. No other lock is held while waiting for one |
+| L0 | Rate-limit bucket rows (IP and player) and the `key_usage` row of the key being reserved | Their own autocommit statements on separate connections, run before the request transaction (a reservation is only needed when the in-memory allowance runs out, which the operation checks before `BEGIN`). Released at once. No other lock is held while waiting for one |
 | L1 | `games` row of the game addressed | Every write, from step 5 to commit. Also re-encryption and cleanup (with `SKIP LOCKED`) |
 | L2 | Rows of `players`, `credentials`, `secret_codes`, `guesses`, `idempotency_keys`, `token_rotations`, `rematch_markers`, `game_results` | Only while holding the L1 lock of their own game (exception below) |
 
@@ -215,7 +215,7 @@ Rules:
 - **One game lock per transaction.** No transaction locks two existing games. `createRematch` locks the original (L1) and then inserts the new game and the marker. Nobody else can lock rows that do not exist yet, and a concurrent insert for the same rematch is excluded by the original's lock.
 - **Child rows only under the game lock.** Because every writer holds L1 first, writers on the same game are fully serialised and cannot deadlock on child rows.
 - **L0 rows never share a lock with a game.** L0 statements are autocommit and finish before L1 is requested (R20.9). Nothing holds an L0 row and then asks for L1, and no transaction holding L1 touches an L0 row.
-- **Encryption reservations are not part of the request transaction.** They are committed on their own before the transaction begins, so a rollback cannot undo them (R10.10), and a shard row lock is never held together with a game lock.
+- **Encryption reservations are not part of the request transaction.** They are committed on their own before the transaction begins, so a rollback cannot undo them (R10.10), and the key counter row lock is held for one statement only and never together with a game lock.
 - **Never wait in maintenance.** Cleanup and re-encryption use `FOR UPDATE SKIP LOCKED` on games and never wait for L1. Rate-limit pruning uses `SKIP LOCKED`.
 - **Foreign key side effects.** Deleting a rematch game updates its `rematch_markers` row (`rematch_game_id` set to null), which is an L2 row of the original game, taken by cleanup without the original's game lock. The only other writers of a marker row are `createRematch` (which holds the original's lock and inserts it before any cleanup can see it) and cascade deletion by cleanup of the original. Two cleanup runs can queue on the same marker row but neither holds a lock the other needs, so there is no cycle. Waits are bounded by `lock_timeout`, and a lock timeout makes cleanup skip the batch and retry on the next run.
 - **Retries.** Deadlock (`40P01`), serialisation failure (`40001`) and unique-violation backstops are retried once by the transaction helper. Lock timeout is not retried and returns `503` to the client with `Retry-After`.
@@ -262,13 +262,17 @@ A `SecretCodeVault` in the persistence layer owns encryption. Cryptographic deta
 - Request fingerprints for guesses are keyed HMACs from the vault (`vault.fingerprint`), not plain hashes (RD-8, R5.12).
 - The vault enforces the encryption reservation rule of section 9.1.
 
-### 9.1 Encryption usage reservation (RD-10, RD-13, R10.10)
+### 9.1 Encryption usage reservation (RD-10, RD-13, CR-9, R10.10)
 
-- Each operation declares the largest number of encryptions it can perform (guess submission 1, code submission 1, rotation 1, mint 0, results and progress 0, a re-encryption of one game at most 22 plus rotation ciphertexts). Before `BEGIN` the vault checks that the instance's in-memory allowance for the active key covers it, reserving a block (`KEY_USAGE_BLOCK`) in a separate autocommit transaction if not (`database-schema.md` section 6.2).
-- Every encryption invocation consumes one unit of the allowance when it happens, whether or not the surrounding transaction commits. The allowance never goes up except by a committed reservation. The database counter can therefore over-count (unused or lost allowance) but never under-count.
-- If the reservation fails or the key is past the hard stop, the operation fails closed with `503` before any state is read or written.
-- At the warning and rotation thresholds the vault raises metrics and health status. The thresholds are configuration (section 13).
-- After a database restore the counter may be behind reality. The restore procedure therefore activates a new key before traffic (R10.13, `deployment.md` section 6.1). A key that has been `DECRYPT_ONLY` never becomes `ACTIVE` again.
+The full specification, with the statement, the guarantees G1 to G8 and the threshold table, is in `database-schema.md` section 6.2. The architecture:
+
+- **Terms.** A *reserved unit* is one permitted encryption counted in the key's counter `R`. An *encryption invocation* is one actual encryption, and consumes one reserved unit. An *allowance* is the reserved units an instance holds in memory, unconsumed. Allowances are part of `R`.
+- **One authoritative row per key.** Every instance reserves through one atomic conditional `UPDATE` on that row, so reservations under a key are serialised by the database and the limit check cannot be passed by two instances at once. The old 32 shards are replaced.
+- **Before the transaction.** Each operation declares its largest number of encryptions (guess submission 1, code submission 1, rotation 1, mint 0, results and progress 0, re-encryption of one game at most 22 plus rotation ciphertexts). Before `BEGIN` the vault checks that the allowance for the active key covers it. If not it reserves one block (`KEY_USAGE_BLOCK`) in a separate autocommit transaction. A refusal or failure ends the request with `503` before any state is read or written.
+- **At the invocation.** `vault.consume(keyId)` decrements the allowance and throws if it is zero. Every encryption goes through it, whether or not the surrounding transaction later commits. There is no code path that encrypts without consuming a unit.
+- **Thresholds.** Decided from the returned total `R`: warning at 2^27 (metric, log, health `warning`), rotation overdue at 2^28 (critical alert, health degraded, reservations continue, RD-14), hard stop at 2^30 (reservations refused, new encryption fails closed). The key must be rotated before it reaches the hard stop.
+- **Rotation and restore seal the old key** (`keys:seal`), which sets its counter to the limit so every later reservation under it is refused, whatever the ring says. After a restore a new key is activated before traffic and all instances restart, which discards allowances (R10.13, `deployment.md` section 6.1). A key that has been `DECRYPT_ONLY` never becomes `ACTIVE` again.
+- **Metrics:** `duocode_key_usage_reserved{key_id}`, `duocode_key_usage_state{key_id}`, `duocode_key_usage_refusals_total{key_id}`, `duocode_key_allowance{key_id}` (per instance). Labels are bounded (key ids).
 
 ## 10. Request canonicalisation and fingerprints (CL-6)
 
@@ -331,20 +335,20 @@ All keys are read at start-up, validated, and failure is fatal. Defaults are the
 | `BACKUP_RETENTION_DAYS` | `35` | Used by key retirement checks and docs |
 | `KEY_USAGE_WARN` | `134217728` (2^27) | Warn when a key's reserved total reaches this (approved, RD-10) |
 | `KEY_USAGE_ROTATE_BY` | `268435456` (2^28) | Rotation required by this count (approved, RD-10) |
-| `KEY_USAGE_HARD_STOP` | `1073741824` (2^30) | Refuse to encrypt with the key (approved, RD-10) |
-| `KEY_USAGE_BLOCK` | `1024` | Encryptions reserved per reservation (RD-13) |
+| `KEY_USAGE_HARD_STOP` | `1073741824` (2^30) | Hard stop on reserved units. Must be at most 2^30 and a multiple of `KEY_USAGE_BLOCK`. A stricter (lower) value is allowed. The database also enforces 2^30 absolutely (approved, RD-10) |
+| `KEY_USAGE_BLOCK` | `1024` | Units per reservation. Must divide `KEY_USAGE_HARD_STOP` and be at most 2^20 (RD-13) |
 | `RATE_LIMITS` | see `deployment.md` section 4 | Capacity and refill per scope |
 | `DB_LOCK_TIMEOUT_MS` | `5000` | Transaction lock timeout |
 | `DB_STATEMENT_TIMEOUT_MS` | `10000` | Statement timeout |
 | `LOG_LEVEL` | `info` | Logging |
 | `HTTP_MAX_BODY_BYTES` | `1024` | Body size limit |
 
-Validation: TTLs, replay window, batch size and rate-limit values must be positive. `BACKUP_RETENTION_DAYS` must be positive. Development and production use separate environment files. Only `.env.example` is committed.
+Validation: TTLs, replay window, batch size and rate-limit values must be positive. `KEY_USAGE_WARN <= KEY_USAGE_ROTATE_BY <= KEY_USAGE_HARD_STOP <= 2^30`, and `KEY_USAGE_HARD_STOP` must be a multiple of `KEY_USAGE_BLOCK`. Any violation stops start-up. `BACKUP_RETENTION_DAYS` must be positive. Development and production use separate environment files. Only `.env.example` is committed.
 
 ## 14. Observability (R13.8, R13.9)
 
 - Structured JSON logs with allow-listed fields only: time, level, request id, route template, status, duration, error code, operation, counts, game id where needed. No client IP, no nicknames, no bodies, no headers beyond the allow-list. Rules in `security-assessment.md` section 4.
-- Metrics (Prometheus text format) on the admin listener: games created, active, completed; requests by route template and status class; latency histogram; database pool usage; cleanup deleted count and duration; rate-limit denials by scope; encryptions reserved per key id (from `key_usage`); decrypt failures; replays by operation. Labels come from bounded sets and never contain game ids, player ids, nicknames, IP addresses or tokens.
+- Metrics (Prometheus text format) on the admin listener: games created, active, completed; requests by route template and status class; latency histogram; database pool usage; cleanup deleted count and duration; rate-limit denials by scope; reserved units per key id and key usage state (from `key_usage`); decrypt failures; replays by operation. Labels come from bounded sets and never contain game ids, player ids, nicknames, IP addresses or tokens.
 - `GET /healthz` runs `SELECT 1` and verifies the key ring loaded. It is on the public listener and reveals nothing else.
 
 ## 15. Future compatibility (constraints only)

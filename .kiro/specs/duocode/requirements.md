@@ -1,4 +1,4 @@
-# DuoCode Requirements (Backend MVP 1), revision 3.1 (final for gate review)
+# DuoCode Requirements (Backend MVP 1), revision 3.1 (final for gate review, strict hard-stop correction)
 
 Source: `DuoCode-Requirements` v2.0 (baseline, dated 21 November 2026) and the owner decisions in the decision register.
 Scope: MVP 1, a backend-only game playable through the REST API. The web application, PWA, white-label and multi-tenant work are out of scope.
@@ -42,6 +42,9 @@ This file owns the requirements and the decision register. Other artefacts own t
 - **Rematch capability**: Bearer credential that authorises creating one rematch of one completed game. It grants no access to any game.
 - **Credential**: Any of the three tokens above.
 - **Reference time**: The database clock value read once at the authorisation point of a request. Every expiry and validity decision in that request uses it.
+- **Reserved unit**: One permitted encryption under a key, counted in the key's authoritative reservation counter `R`. `R` counts units reserved, not encryptions performed, so `R` can exceed the number of invocations and never fall below it.
+- **Encryption invocation**: One actual call that encrypts a value. It consumes one reserved unit held by the calling instance.
+- **Allowance**: The reserved units one application instance holds in memory and has not yet consumed. Allowances are part of `R`.
 - **Rematch marker**: A database row keyed by the original game that records that a rematch was created. It lives as long as the original game and does not depend on the rematch game's lifetime (R9.4).
 - **Retention end** (`expires_at`): The instant at or after which a game and everything attached to it is expired.
 - **Expired**: `reference time >= expires_at`. The same test applies in authentication, operations and cleanup.
@@ -64,7 +67,7 @@ The values live in one configuration object so later work can vary them. MVP 1 d
 
 ## Decision register
 
-Status values: **Approved** (owner approved), **Approved with conditions** or **with extension** or **with qualification** (approved, and the conditions are applied in the text and listed in the row), **Pending** (needs an owner decision). No technical decision is pending in revision 3.1.
+Status values: **Approved** (owner approved), **Approved with conditions** or **with extension** or **with qualification** (approved, and the conditions are applied in the text and listed in the row), **Pending** (needs an owner decision). One design decision (RD-14) awaits approval.
 
 ### Owner decisions from revision 2
 
@@ -129,6 +132,7 @@ All ten are Approved and unchanged in substance.
 | CR-6 | The stray email signature is removed from `README.md`. | R19.1 |
 | CR-7 | All documents were reviewed for consistency with the revised decisions. Consistency checks are reported in the review package. | R19.5 |
 | CR-8 | The rematch-created marker is a separate database row that survives deletion of the rematch game. | R9.4, R9.8, `database-schema.md` |
+| CR-9 | The 2^30 hard stop is a strict global limit across all instances. One authoritative counter row per key replaces the 32 shards. A single atomic conditional statement grants reservations, so the total of reserved units can never exceed 2^30, allowances are inside the total, and concurrent instances cannot pass the limit independently. A key is sealed at every rotation and restore. Threshold behaviour is defined exactly, and reserved units are distinguished from encryption invocations throughout. | R10.10, R10.13, `database-schema.md` 6.2 |
 
 ### Decisions from the revision 3.1 review (RD-1 to RD-13)
 
@@ -146,7 +150,7 @@ All ten are Approved and unchanged in substance.
 | RD-10 | Nonce thresholds: warning at 2^27 encryptions per key, mandatory rotation by 2^28, hard stop at 2^30. The counter must account for every encryption invocation, including those in failed or rolled-back application transactions. | Approved | R10.10, `security-assessment.md` 3.3a |
 | RD-11 | Rotation replay may decrypt and return the replacement token, as a narrow third exception, only when: the original token is presented, the original UUIDv4 key is presented, the request fingerprint matches, the replay window is valid, and the replacement token has not been revoked. The replacement token never appears in logs, diagnostics, metrics or error responses. A replay never reactivates the old token. | Approved | R8.13, R10.7, R13.2 |
 | RD-12 | Rotating a player's access token revokes that player's unused rematch capability in the same transaction. | Approved | R8.6 |
-| RD-13 | Key usage counter, approved on conditions: reservations are durable and cannot be rolled back with the application transaction. The counter can never underestimate actual encryption usage. A database restore procedure prevents continued encryption under a key whose counter may have been rolled back. A new key is activated before traffic is accepted after a restoration where necessary. Old keys remain available for decryption. | Approved with conditions | R10.10, R10.13, R21.4, `database-schema.md`, `deployment.md` 6.1 |
+| RD-13 | Key usage counter (refined by CR-9: one authoritative row per key and a strict conditional reservation, replacing the draft's shards), approved on conditions: reservations are durable and cannot be rolled back with the application transaction. The counter can never underestimate actual encryption usage. A database restore procedure prevents continued encryption under a key whose counter may have been rolled back. A new key is activated before traffic is accepted after a restoration where necessary. Old keys remain available for decryption. | Approved with conditions | R10.10, R10.13, R21.4, `database-schema.md`, `deployment.md` 6.1 |
 
 ### Choices CH-1 to CH-6
 
@@ -161,7 +165,11 @@ All ten are Approved and unchanged in substance.
 
 ### Decisions awaiting owner approval
 
-None of the technical decisions is pending. Approval of the six Phase 1 gates, each to be authorised explicitly, remains with the owner (`tasks.md` Phase 1).
+One design decision arose from CR-9 and needs your approval. Approval of the six Phase 1 gates, each to be authorised explicitly, remains with the owner (`tasks.md` Phase 1).
+
+| ID | Decision needed | Proposal |
+|---|---|---|
+| RD-14 | Behaviour of reservations between the rotation threshold (2^28) and the hard stop (2^30), and whether the limit is inclusive. You approved "mandatory rotation by 2^28" and "hard stop at 2^30" without saying whether reservations are still granted in between. | Between 2^28 and 2^30 reservations **continue** to be granted, with a critical alert and a degraded health status, so that a missed rotation does not become an outage while the cryptographic margin is still large. The limit 2^30 is inclusive: `R` may equal 2^30 exactly and never exceed it. Rotation seals the old key. If you prefer to refuse new reservations at 2^28, set `KEY_USAGE_HARD_STOP` equal to `KEY_USAGE_ROTATE_BY`, or tell me to change the rule. |
 
 ### Inputs still needed for gate 6 (licensing)
 
@@ -306,10 +314,17 @@ Acceptance criteria use EARS wording. Baseline references (FR-nnn, SIM-nnn, SCAL
 7. THE system SHALL decrypt a secret code or guess only in these paths (CR-1): (a) guess submission, which decrypts the opponent's code to compute feedback and serialises only the feedback; (b) progress, which decrypts the caller's own guesses and returns them with their feedback to the authenticated caller; (c) results, only after the game is verified `COMPLETED` and before any ciphertext is read, which decrypts both codes and all guesses and returns them with feedback to an authenticated participant. Exceptions (b) and (c) are the only cases in which a decrypted game value may be serialised into an API response. The one other permitted serialisation of decrypted data is the replacement token in a rotation replay, a credential and not game data, under the conditions of R8.13 (RD-11). A decrypted value SHALL NOT be written to logs, diagnostics, metrics, traces, error responses, crash output or any persistent plaintext storage (including stored idempotency responses and any column other than the ciphertext columns), SHALL NOT be assigned to long-lived state, and SHALL exist only inside the callback that uses it, with its buffer cleared afterwards as far as the runtime permits.
 8. THE game engine SHALL receive decrypted codes and guesses only as function arguments and SHALL contain no cryptography. Decryption lives in the persistence layer. (R14)
 9. THE documentation SHALL describe key generation, storage, backup, recovery, rotation, retirement and compromise response, including that losing every copy of a key makes the affected data unrecoverable. (`security-assessment.md`, `deployment.md`)
-10. THE system SHALL keep a durable, shared usage counter per encryption key and enforce these thresholds (RD-10, RD-13): a warning at 2^27 encryptions, mandatory rotation by 2^28, and a hard stop at 2^30 after which the key is not used to encrypt. Nonces are random 96-bit values. The counter SHALL be a reservation made before use: an instance SHALL reserve a block of encryptions in its own short autocommit transaction, committed before any encryption in that block is performed, and SHALL NOT perform an encryption it has not reserved. Reservations are therefore not undone when an application transaction fails or rolls back, an instance crashes, or a request is retried, and the counter can overestimate use but SHALL NEVER underestimate it. Every encryption invocation consumes a reserved unit, whether or not the surrounding transaction commits. If a reservation cannot be made, THE system SHALL not encrypt and SHALL fail closed with `503`.
+10. THE system SHALL keep one durable, authoritative usage counter row per encryption key and SHALL enforce these thresholds on its reserved total `R` (RD-10, RD-13, CR-9): a warning state at 2^27, a rotation-required state at 2^28 (the key must be rotated, and reservations continue to be granted until the hard stop, RD-14), and a hard stop at 2^30 where no further reservation is granted. The three terms are distinct: a *reserved unit* is one permitted encryption counted in `R`, an *encryption invocation* is one actual encryption and consumes one reserved unit held by the calling instance, and an *allowance* is the reserved units an instance holds unconsumed. The following SHALL hold:
+    a. `R` SHALL never exceed 2^30. This SHALL be enforced by an atomic conditional reservation statement on the single counter row (so every reservation under a key, from every instance, is serialised) and, as a backstop, by a database constraint.
+    b. A reservation SHALL be granted only if `R` plus the block does not exceed the configured hard stop, evaluated against the latest committed `R`. Otherwise it SHALL be refused whole and change nothing. Concurrent reservations from different instances SHALL NOT be able to pass the limit independently.
+    c. A reservation SHALL be committed in its own short autocommit transaction before any unit from it is used, so it SHALL NOT be rolled back with an application transaction, an instance crash or a retry.
+    d. Every encryption invocation SHALL consume one previously reserved unit, whether or not the surrounding transaction commits. An instance SHALL NOT encrypt when its allowance is exhausted, and SHALL fail closed with `503` if it cannot obtain a reservation.
+    e. All outstanding allowances are part of `R`, because a unit enters an allowance only after it has been added to `R`.
+    f. `R` MAY overestimate the invocations (lost allowances, unknown outcomes) and SHALL NEVER underestimate them.
+    g. The configured hard stop SHALL be at most 2^30 and a multiple of the block size, validated at start-up.
 11. A key SHALL be retired (removed from the ring) only when no database row references it and every backup that may contain data encrypted under it has expired or been destroyed. The earliest retirement date is the completion date of re-encryption plus the maximum backup retention (35 days). Until then the key stays in the ring as `DECRYPT_ONLY` and in the key backup. (ND-9)
 12. THE system SHALL provide a key verification task that lists the key identifiers referenced by the database, confirms each is present in the ring, and test-decrypts every ciphertext, for use after restore and before key retirement.
-13. AFTER a database restore from a backup, THE system SHALL NOT continue to encrypt under the key that was active before the restore, because its usage counter may have been rolled back and so underestimate real use (RD-13). The restore procedure SHALL generate a new key, make it the only `ACTIVE` key in the key ring, and mark the previous key `DECRYPT_ONLY`, before the application accepts traffic. The one exception is a restore that is proved lossless, meaning the pre-restore database is still readable and its counters for the active key do not exceed the restored counters. Old keys SHALL remain in the ring for decryption of existing data until retired under R10.11. A key that has been `DECRYPT_ONLY` SHALL NEVER return to `ACTIVE`. The key verification task SHALL also check, for each key, that the number of ciphertext rows under it does not exceed its reserved total, and fail if it does.
+13. AFTER a database restore from a backup, THE system SHALL NOT continue to encrypt under the key that was active before the restore, because its usage counter may have been rolled back and so underestimate real use (RD-13). The restore procedure SHALL generate a new key, make it the only `ACTIVE` key in the key ring, mark the previous key `DECRYPT_ONLY`, and **seal every older key**, meaning set its counter to the hard-stop value so that every further reservation under it is refused even if the ring were wrong, and SHALL restart all instances so that every in-memory allowance is discarded, all before the application accepts traffic. The one exception to activating a new key is a restore that is proved lossless, meaning the pre-restore database is still readable and its counters for the active key do not exceed the restored counters. A planned rotation SHALL seal the old key once every instance runs the new ring. Old keys SHALL remain in the ring for decryption of existing data until retired under R10.11. A key that has been `DECRYPT_ONLY` SHALL NEVER return to `ACTIVE`. The key verification task SHALL also check, for each key, that the number of ciphertext rows under it does not exceed its reserved total, and fail if it does.
 
 ### R11: Expiry, retention and cleanup
 

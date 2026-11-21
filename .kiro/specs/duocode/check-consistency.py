@@ -42,7 +42,7 @@ for fn,t in files.items():
 check(f'C03 every TS group and TS-CONC id referenced is defined ({len(defined)} groups, {len(conc_def)} concurrency scenarios)',pr)
 # 4 decision ids
 reg=req
-ids={'ND':9,'C':7,'CL':8,'RD':13,'OD':10,'CR':8,'CH':6}
+ids={'ND':9,'C':7,'CL':8,'RD':14,'OD':10,'CR':9,'CH':6}
 pr=[]
 for fn,t in files.items():
     for k,mx in ids.items():
@@ -127,7 +127,7 @@ for fn in spec:
     for k in set(re.findall(r'`([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)`',files[fn])):
         if k.startswith(('TS_','INVALID_','GAME_')): continue
         if k in enum or k in {'READ_ONLY','SPDX','SOURCE_DATE_EPOCH'}: continue  # SOURCE_DATE_EPOCH is a build variable, not application configuration
-        if re.fullmatch(r'(WAITING_FOR_PLAYER|WAITING_FOR_CODES|PLAYER_[12]_WINS|DRAW|ACTIVE|COMPLETED|EXPIRED|NOT_STARTED|IN_PROGRESS|SOLVED|EXHAUSTED|DECRYPT_ONLY|ROTATED|SUPERSEDED|ROTATION_SIDE_EFFECT|REVOKED|CONSUMED|LIVE|ACCESS|INVITATION|REMATCH|EXPIRED_PENDING)',k): continue
+        if re.fullmatch(r'(WAITING_FOR_PLAYER|WAITING_FOR_CODES|PLAYER_[12]_WINS|DRAW|ACTIVE|COMPLETED|EXPIRED|NOT_STARTED|IN_PROGRESS|SOLVED|EXHAUSTED|DECRYPT_ONLY|ROTATED|SUPERSEDED|ROTATION_SIDE_EFFECT|REVOKED|CONSUMED|LIVE|ACCESS|INVITATION|REMATCH|EXPIRED_PENDING|ROTATION_OVERDUE|WARNING)',k): continue
         if k not in allowed and not k.startswith(('RATE_LIMIT_','TTL_')) : pr.append(f'{fn}: {k} not in configuration table')
 check(f'C11 every configuration key named in the specification is in design.md section 13 ({len(cfg)} keys)',pr)
 # 12 deployment scopes vs design
@@ -206,6 +206,41 @@ for f in tracked:
     elif f.startswith('.github/workflows/'): continue               # CI skeleton added earlier at the owner request, no application logic
 if any(l.startswith('- [x]') for l in files['tasks.md'].splitlines()): pr.append('a task is marked done')
 check('C21 no application code, database migration or implementation directory exists (only specification, licensing, CI skeleton and the two specification tool scripts)',pr)
+# 23 key usage design consistency (CR-9)
+pr=[]
+ku=re.search(r"CREATE TABLE key_usage \((.*?)\n\);",ddl,re.S)
+if not ku: pr.append('key_usage table missing')
+else:
+    body=ku.group(1)
+    if 'shard' in body: pr.append('key_usage still has a shard column')
+    if not re.search(r'key_id\s+smallint PRIMARY KEY',body): pr.append('key_usage is not one row per key')
+    m=re.search(r'reserved <= (\d+)',body)
+    if not m or int(m.group(1))!=2**30: pr.append('CHECK constant is not 2^30')
+dsg=files['design.md']
+def cfgval(k):
+    m=re.search(r'\| `'+k+r'` \| `(\d+)`',dsg); return int(m.group(1)) if m else None
+w,r_,h,b=cfgval('KEY_USAGE_WARN'),cfgval('KEY_USAGE_ROTATE_BY'),cfgval('KEY_USAGE_HARD_STOP'),cfgval('KEY_USAGE_BLOCK')
+if (w,r_,h)!=(2**27,2**28,2**30): pr.append(f'threshold defaults {w},{r_},{h} are not 2^27, 2^28, 2^30')
+if not b or h%b!=0: pr.append('hard stop is not a multiple of the block')
+if 'reserved + $2 <= $3' not in files['database-schema.md']: pr.append('reservation statement guard missing in database-schema.md')
+for term in ('Reserved unit','Encryption invocation','Allowance'):
+    if term not in files['requirements.md']: pr.append(f'term {term!r} not in requirements glossary')
+    if term not in files['database-schema.md']: pr.append(f'term {term!r} not defined in database-schema.md 6.2')
+for fn in spec:
+    if fn=='revision-3.1-review-package.md': continue
+    for i,l in enumerate(files[fn].splitlines(),1):
+        if re.search(r'shard',l,re.I) and not re.search(r'replac|draft|old_key_usage|negative control|removed|without shard|With shards|sharding',l,re.I):
+            pr.append(f'{fn}:{i}: shard mentioned as current design: {l.strip()[:90]}')
+for need in ('keys:seal','TS-CONC-21','TS-CONC-22'):
+    if need not in files['test-strategy.md'] and need not in files['deployment.md']: pr.append(f'{need} missing')
+if 'RD-14' not in files['requirements.md'] or 'CR-9' not in files['requirements.md']: pr.append('RD-14 or CR-9 missing from the register')
+check('C23 key usage design is consistent: one authoritative row per key, CHECK at 2^30, thresholds 2^27 / 2^28 / 2^30, strict statement, terms defined, sharding only mentioned as replaced',pr)
+# 24 verify-schema uses the specified statements
+vs=open(d+'verify-schema.py').read()
+pr=[]
+for need in ('database-schema.md','reserve_sql','seal_sql','register_sql'):
+    if need not in vs: pr.append(f'verify-schema.py does not use {need}')
+check('C24 the schema verification tool takes the reservation, registration and sealing statements from database-schema.md',pr)
 # 22 OpenAPI lint
 import shutil as _sh
 if _sh.which('npx'):

@@ -29,7 +29,7 @@ Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and 
 | R7 | Completion and results | `requirements.md`, `state-machine.md`, `openapi.yaml` | `getResults`, `submitGuess` (completing guess) | `game_results` primary key, `games` completion `CHECK`. Results read no ciphertext before `COMPLETED` is verified | TS-ENG, TS-STATE, TS-SEC, TS-ENC, TS-CONC-05, TS-CONC-16, TS-DB | 1.1, 1.3, 1.4, 1.5 | A |
 | R8 | Credentials, rotation, authorisation point | `requirements.md`, `design.md` (section 5), `state-machine.md` (sections 1.3, 1.4, 3), `security-assessment.md` (section 2), `openapi.yaml` | `rotateAccessToken`, all authenticated operations | `credentials` type, partial unique indexes, composite foreign key to player and game, `token_rotations` | TS-CRED, TS-CONC-06, TS-CONC-07, TS-CONC-08, TS-CONC-18, TS-SEC, TS-DB | 1.1, 1.2, 1.3, 1.4, 1.5 | A (RD-3, RD-11, RD-12 approved) |
 | R9 | Rematch | `requirements.md`, `state-machine.md` (sections 3, 4), `database-schema.md`, `openapi.yaml` | `mintRematchCapability`, `createRematch` | Primary key of `rematch_markers` (one ever, survives rematch deletion), `UNIQUE (rematch_game_id)`, one-live-capability partial index. All unused capabilities revoked on creation | TS-CRED, TS-CONC-09, TS-CONC-10, TS-CONC-13, TS-CONC-19, TS-DB | 1.1, 1.3, 1.4 | A (RD-6, CH-3 approved) |
-| R10 | Encryption, key management, usage counter | `requirements.md`, `security-assessment.md` (section 3), `design.md` (sections 9, 9.1), `database-schema.md` (section 6.2), `deployment.md` (sections 5, 6) | none (internal), `getHealth` (key ring readiness) | `key_id` columns, fixed-length ciphertext `CHECK`s on `secret_codes`, `guesses`, `token_rotations`; `key_usage` reservation counters | TS-ENC, TS-CONC-14, TS-CONC-20, TS-OPS, TS-SEC | 1.1, 1.2, 1.4, 1.5 | A (RD-10, RD-13 approved with conditions) |
+| R10 | Encryption, key management, usage counter | `requirements.md`, `security-assessment.md` (section 3), `design.md` (sections 9, 9.1), `database-schema.md` (section 6.2), `deployment.md` (sections 5, 6) | none (internal), `getHealth` (key ring readiness, key usage state) | `key_id` columns, fixed-length ciphertext `CHECK`s on `secret_codes`, `guesses`, `token_rotations`; `key_usage` one row per key with `CHECK (reserved <= 2^30)` | TS-ENC, TS-CONC-14, TS-CONC-20, TS-CONC-21, TS-CONC-22, TS-OPS, TS-SEC | 1.1, 1.2, 1.4, 1.5 | A+RD (RD-10, RD-13 approved with conditions. RD-14 awaits approval) |
 | R11 | Expiry, retention, cleanup | `requirements.md`, `state-machine.md` (section 1.1), `database-schema.md` (sections 5, 7), `deployment.md` (section 7) | `runCleanup`, all operations (`GAME_EXPIRED`) | `games.expires_at` and index, cascade deletes, `SKIP LOCKED` cleanup statement | TS-RET, TS-CRED, TS-CONC-10 to TS-CONC-13, TS-OPS | 1.1, 1.4, 1.5 | A |
 | R12 | API conventions and errors | `requirements.md`, `openapi.yaml` | All operations | None | TS-CONTRACT, TS-API, TS-VAL | 1.1, 1.3 | A |
 | R13 | Security, privacy, logging, metrics | `requirements.md`, `security-assessment.md` (sections 4, 6), `design.md` (section 14) | `getMetrics`, `getHealth` | `rate_limits` stores HMACs only, no IP or token columns anywhere | TS-SEC, TS-RATE, TS-OPS | 1.1, 1.5 | A (RD-9 approved) |
@@ -87,8 +87,8 @@ Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and 
 | R10.5 transactional re-encryption | `security-assessment.md` section 3.8 | TS-ENC, TS-CONC-14 |
 | R10.7 decrypt paths and the two serialisation exceptions | Vault spy, response-schema scan, results gating | TS-ENC |
 | R10.10 nonce metric | Counter and alert | TS-ENC |
-| R10.10 durable reservation counter and thresholds | `key_usage`, `database-schema.md` section 6.2, `design.md` sections 9.1, 13 | TS-ENC, TS-CONC-20 |
-| R10.13 new key after restore | `deployment.md` section 6.1, ring `deactivatedAt` rule | TS-OPS, TS-ENC |
+| R10.10 strict global hard stop: one authoritative counter row, atomic conditional reservation, `CHECK` at 2^30, reserved units vs invocations, threshold behaviour | `key_usage`, `database-schema.md` section 6.2 (guarantees G1 to G8), `design.md` sections 9.1, 13 | TS-ENC, TS-CONC-20, TS-CONC-21, TS-CONC-22, TS-DB |
+| R10.13 new key and sealing of older keys after restore, restart of all instances | `deployment.md` section 6.1, `database-schema.md` section 6.2, ring `deactivatedAt` rule | TS-OPS, TS-ENC |
 | R10.11, R10.12 retirement and verify | `keys:verify` | TS-ENC, TS-OPS |
 | R11.2 clock rules | `database-schema.md` section 5 | TS-RET |
 | R11.3 `>=` rule | Reference time | TS-RET, TS-CONC-10 |
@@ -140,6 +140,7 @@ Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and 
 | CR-6 | R19.1 | `README.md` |
 | CR-7 | R19.5 | `revision-3.1-review-package.md` |
 | CR-8 | R9.4, R9.8 | `database-schema.md` `rematch_markers` |
+| CR-9 | R10.10, R10.13 | `database-schema.md` section 6.2, `security-assessment.md` section 3.3a, `test-strategy.md` TS-ENC and TS-CONC-20 to TS-CONC-22 |
 | RD-1 | R18.6 | `deployment.md` section 4.3 |
 | RD-2 | R20.2, R20.7, R20.8 | `deployment.md` section 4.2 |
 | RD-3 | R8.13 | `state-machine.md` section 3.1 |
@@ -151,6 +152,7 @@ Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and 
 | RD-9 | R20.4, R20.10 | `security-assessment.md` section 6.2 |
 | RD-10 | R10.10 | `security-assessment.md` section 3.3a |
 | RD-13 | R10.10, R10.13, R21.4 | `database-schema.md` section 6.2, `deployment.md` section 6.1 |
+| RD-14 | R10.10 | `database-schema.md` section 6.2 threshold table (awaiting owner approval) |
 | RD-11 | R8.13, R10.7, R13.2 | `security-assessment.md` sections 2.2, 3.5, `state-machine.md` section 3.1 |
 | RD-12 | R8.6 | `state-machine.md` section 3 |
 | CH-1 | R1.3, R1.5 | `test-strategy.md` TS-VAL display-security tests |

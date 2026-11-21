@@ -1,4 +1,4 @@
-# DuoCode Security Assessment (revision 3.1, final for gate review)
+# DuoCode Security Assessment (revision 3.1, final for gate review, strict hard-stop correction)
 
 Owns: threats and mitigations, credential security, rotation implications, encryption and key management, logging and metrics rules, residual risks. Related: `requirements.md` (R3, R5, R8, R10, R13, R20, R21), `design.md` (credential model, authorisation point, vault, lock ordering), `database-schema.md` (storage), `state-machine.md` (credential lifecycle, idempotent rotation), `../../../openapi/openapi.yaml` (error behaviour), `deployment.md` (secrets, proxy, backups, restore).
 
@@ -115,7 +115,9 @@ Implementation implications:
 - **Nonces.** 96 bits from `crypto.getRandomValues`, fresh for every encryption, including every re-encryption. Uniqueness is probabilistic, so it needs a per-key budget (RD-10, section 3.3a).
 - **Never deterministic.** Two encryptions of the same plaintext always differ.
 
-### 3.3a Nonce budget, rotation thresholds and the usage counter (RD-10 and RD-13, approved)
+### 3.3a Nonce budget, rotation thresholds and the usage counter (RD-10, RD-13, CR-9)
+
+**Terms.** A *reserved unit* is one permitted encryption, counted in the key's total `R`. An *encryption invocation* is one actual encryption and consumes one reserved unit. An *allowance* is the reserved units an instance holds unconsumed, and is part of `R`. The thresholds below apply to `R`. Because `R >= invocations` always, a limit on `R` is a limit on invocations.
 
 Facts: random 96-bit nonces with AES-GCM. The probability that any two of `n` encryptions under one key share a nonce is about `n² / 2^97`. NIST SP 800-38D allows at most `2^32` invocations per key with random nonces, which bounds that probability at `2^-32`.
 
@@ -131,24 +133,35 @@ Rationale:
 - Re-encryption counts too: every row it rewrites is a new encryption under the new key.
 - The three points give time to react: the warning prompts planning, the rotation point makes rotation mandatory, and the hard stop makes the application fail closed before the limit rather than silently exceed it.
 
-**Mechanism (RD-13, approved with conditions): durable reservations.** The counter does not count encryptions after the fact. It counts *reservations* made before use, so it cannot be rolled back with the application transaction and cannot under-count.
+**Mechanism (RD-13 and CR-9): durable reservations against one authoritative counter, with a strict hard stop.** The full specification is `database-schema.md` section 6.2. In brief:
 
-1. Before an operation that may encrypt, the instance makes sure its in-memory allowance for the active key covers the operation's worst case. This happens before the request transaction begins.
-2. If it does not, the instance reserves a block (default 1024) in its own short autocommit transaction on a separate connection (`database-schema.md` section 6.2). Only after that transaction commits is the block added to the allowance.
-3. Each encryption invocation consumes one unit of the allowance at the moment it happens, whatever happens to the surrounding transaction afterwards.
-4. If the reservation fails, nothing is encrypted and the request fails closed with `503`.
+1. One row per key holds `R`. A single atomic statement grants a block only if `R + block <= hard stop`: `UPDATE key_usage SET reserved = reserved + block WHERE key_id = k AND reserved + block <= hard_stop RETURNING reserved`. No row returned means refused, with no change.
+2. The statement runs in its own autocommit transaction on a separate connection, before the request transaction. A reservation is therefore never rolled back with an application transaction.
+3. An instance adds the block to its in-memory allowance only after the statement returns. Each encryption invocation consumes one unit and the vault refuses to encrypt with an empty allowance.
+4. A database `CHECK (reserved <= 2^30)` is an absolute backstop independent of application configuration.
 
-Why this meets the conditions:
+**Why the hard stop is strict, and why the 32 shards were replaced.** With shards, each reservation updated one shard row, and the total across shards was read separately. Two instances working on different shards could both see room below the limit and both reserve, and instances already holding allowances kept encrypting after another instance saw the limit exceeded. The draft therefore only approximated the limit, up to one block per instance. The single row removes the race: PostgreSQL's row lock serialises every reservation under the key, and a waiting update re-evaluates its `WHERE` clause against the latest committed `R` before changing anything, so two instances cannot both be granted the last block. Allowances are inside `R` by construction, because a unit enters an allowance only after it was added to `R`. So the number of invocations is at most the number of units ever reserved, which is at most 2^30. Contention is one statement per 1024 encryptions per instance on one row, which is not significant at DuoCode's expected volume. Correctness was chosen over parallelism.
+
+**Guarantees:**
 - *Cannot be rolled back with the application transaction:* the reservation is committed independently, earlier.
-- *Account for every invocation, including failed or rolled-back transactions:* invocations consume reserved units regardless of the transaction outcome.
-- *No underestimate:* an encryption needs a unit, a unit needs a committed reservation, so `sum(reserved) >= encryptions performed`. Crashes and unused allowance only make the counter higher.
-- *Multiple instances:* each reserves its own blocks with atomic increments. Overshoot of a threshold is at most one block per instance.
+- *Accounts for every invocation, including failed or rolled-back transactions:* invocations consume reserved units regardless of the transaction outcome.
+- *No underestimate:* an encryption needs a unit, a unit needs a committed reservation, so `R >= invocations`. Crashes, restarts and unknown outcomes only add unused units, so the counter may overestimate. That is acceptable and safe.
+- *Strict global limit:* `R <= 2^30` always (statement guard plus `CHECK`), with several instances, concurrent reservations, and instances holding outstanding allowances.
+- *No encryption without a unit:* an exhausted allowance stops encryption until a reservation is granted, and at the hard stop none is.
 
-**Limit of the mechanism, and the restore rule (RD-13).** The invariant holds for the live database. If the database is restored from an earlier backup, the `key_usage` rows go back in time too, and the counter may be lower than the encryptions really performed under the key after the backup. Ciphertexts from that period may survive elsewhere (the lost database, older backups, copies held by an attacker), so the nonce budget cannot be assumed unspent. The restore procedure therefore always generates a new key and makes it the only `ACTIVE` key before traffic is accepted, unless the restore is proved lossless (pre-restore counters not above restored counters). The previous key becomes `DECRYPT_ONLY`, stays in the ring so existing data decrypts, and never becomes `ACTIVE` again. The ring file lives outside the database and is not rolled back by a restore, so it keeps the new key and the old key's `DECRYPT_ONLY` status (`deployment.md` section 6.1).
+**Threshold behaviour** (exact):
+
+| Threshold | Behaviour |
+|---|---|
+| 2^27 reserved units | Warning metric, one operational warning per key per process start, `/healthz` reports `warning`. Reservations continue |
+| 2^28 reserved units | The key is `ROTATION_OVERDUE`: critical alert, `/healthz` degraded (HTTP 200). Rotation is mandatory. **Reservations under the key continue to be granted until the hard stop** (RD-14, proposed), so a late rotation is not an outage. Rotating makes the old key `DECRYPT_ONLY` and seals it, after which no reservation under it is granted |
+| 2^30 reserved units | Hard stop. A block that would take `R` above 2^30 is refused, so `R` never exceeds 2^30. `R` can equal 2^30 exactly. No further encryption occurs under the key once instances have consumed the units they already hold. Encrypting operations fail closed with `503`. Decryption is unaffected |
+
+**Limit of the mechanism, and the restore rule (RD-13).** The invariant holds for the live database. If the database is restored from an earlier backup, the `key_usage` row goes back in time too, and `R` may be lower than the encryptions really performed under the key after the backup. Ciphertexts from that period may survive elsewhere (the lost database, older backups, copies held by an attacker), so the nonce budget cannot be assumed unspent. The restore procedure therefore always: generates a new key and makes it the only `ACTIVE` key; **seals every older key** (sets its counter to 2^30, so any reservation under it is refused even if the ring were mistaken); and restarts all instances so every in-memory allowance is discarded. This happens before traffic is accepted, unless the restore is proved lossless (pre-restore counters not above restored counters). The previous key becomes `DECRYPT_ONLY`, stays in the ring so existing data decrypts, and never becomes `ACTIVE` again. The ring file lives outside the database and is not rolled back by a restore, so it keeps the new key and the old key's `DECRYPT_ONLY` status (`deployment.md` section 6.1).
 
 A further guard: `keys:verify` checks that the number of ciphertext rows under each key does not exceed its reserved total. A violation is evidence of a rolled-back or corrupted counter and fails verification.
 
-Configuration: `KEY_USAGE_WARN`, `KEY_USAGE_ROTATE_BY`, `KEY_USAGE_HARD_STOP`, `KEY_USAGE_BLOCK` (`design.md` section 13).
+Configuration: `KEY_USAGE_WARN`, `KEY_USAGE_ROTATE_BY`, `KEY_USAGE_HARD_STOP` (at most 2^30, a multiple of the block), `KEY_USAGE_BLOCK` (`design.md` section 13).
 
 ### 3.4 Authenticated additional data (AAD)
 
@@ -209,13 +222,13 @@ Prohibited without exception: decrypted values in logs, diagnostics, metrics, tr
 1. Restore the database backup into a clean database.
 2. Obtain the newest ring backup (highest `generation`, never an older copy that shows a different key `ACTIVE`). It must contain every `key_id` referenced by the restored data.
 3. Run `deno task keys:verify` against the restored database and the ring. It lists the distinct `key_id` and `fingerprint_key_id` values, confirms each is in the ring, and test-decrypts every ciphertext row (R10.12).
-4. **Activate a new key before traffic (R10.13, RD-13).** Generate a new key, add it to the ring as the only `ACTIVE` key, mark the previous active key `DECRYPT_ONLY`, increase the ring `generation`, and back up the ring. Skip this only if the restore is proved lossless. Re-run `keys:verify`.
+4. **Activate a new key before traffic (R10.13, RD-13).** Generate a new key, add it to the ring as the only `ACTIVE` key, mark the previous active key `DECRYPT_ONLY`, increase the ring `generation`, back up the ring, and **seal every older key** (`deno task keys:seal`) so the restored, possibly lowered counters cannot grant reservations. Restart every instance so that no allowance survives. Skip this only if the restore is proved lossless. Re-run `keys:verify`.
 5. Only then start the application, run cleanup, and accept traffic.
 6. If a needed key is missing, the rows under it are unrecoverable. Affected games cannot be played or shown. Their outcomes and counts survive. Games that finished remain deletable by cleanup.
 
 **Rotation (planned, routine, for example annually or on staff change; mandatory at 2^28 encryptions).**
 1. Generate a new key. Add it to the ring as a new id. Back up the ring (new copy).
-2. Deploy the ring with the new key `ACTIVE` and the previous key `DECRYPT_ONLY`. New writes use the new key. Existing rows still decrypt because each row names its key.
+2. Deploy the ring with the new key `ACTIVE` and the previous key `DECRYPT_ONLY` to every instance. New writes use the new key. Existing rows still decrypt because each row names its key. Once every instance runs the new ring, **seal the old key** (`deno task keys:seal <old id>`), so that no instance can reserve under it again.
 3. Run `deno task reencrypt` (R10.5), see 3.8. Record the completion date D.
 4. Verify no row references the old key with `keys:verify`.
 5. Retire the old key (3.9) no earlier than D + 35 days.
@@ -303,7 +316,7 @@ Mechanisms:
 | T24 | Rematch hijack by a third party | Capability needs an access token to mint. Rotation revokes it. One rematch ever per original game (marker row, RD-6), and creating it revokes every other unused capability (CH-3). Only the presenting player gets seat 1 credentials. Invitation delivered by the creator out of band | Anyone given the invitation can take seat 2, as with any invitation |
 | T25 | Weak randomness | Only `crypto.getRandomValues` and `crypto.randomUUID`. `Math.random` banned by lint rule outside the simulator | None identified |
 | T26 | Rotation replay abuse | Needs old token and key, short window, encrypted storage, same `401` outside the rule (section 2.2) | First rotator wins, window exposure |
-| T27 | Nonce reuse | Random 96-bit nonces, durable reservation counter shared by all instances, warning at 2^27, rotation by 2^28, hard stop at 2^30 (RD-10, RD-13, section 3.3a). New key after any restore | Negligible at expected volume. A restore without a new key could understate usage, which the procedure prevents |
+| T27 | Nonce reuse | Random 96-bit nonces, one authoritative durable reservation counter per key with a strict global limit of 2^30 (atomic conditional statement plus `CHECK`), warning at 2^27, rotation by 2^28 (reservations continue until the hard stop, RD-14), hard stop at 2^30 (RD-10, RD-13, CR-9, section 3.3a). New key and sealing of older keys after any restore | Negligible at expected volume. A restore without a new key could understate usage, which the procedure prevents |
 | T28 | IP-based rate limit evasion or abuse of forwarded headers | Forwarded IP trusted only from `TRUSTED_PROXY_CIDRS`. Player buckets keyed by player id after a preliminary lookup | Shared NAT users share limits. Attackers with many IPs. A holder of an old revoked token can drain the player's bucket until it refills |
 | T29 | Rate-limit data as personal data | Stores an HMAC of the IP with a secret, not the address. Rows deleted after an hour idle. Table excluded from backups (section 6.2) | HMAC key compromise together with a database copy allows IP confirmation, and for IPv4 enumeration of all addresses |
 | T30 | Restore reverts credential state | Documented procedure. Rate-limit table cleared, cleanup run, tokens rotated after backup are reset | Players who rotated after the backup lose their seat. Revoked tokens revive. No point-in-time recovery (RD-7, accepted risk, reassess before production) |

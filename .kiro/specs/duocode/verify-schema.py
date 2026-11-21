@@ -252,52 +252,258 @@ try:
         sql("DELETE FROM rate_limits WHERE ctid IN (SELECT ctid FROM rate_limits WHERE refilled_at < clock_timestamp() - interval '1 hour' FOR UPDATE SKIP LOCKED);")
         assert sql("SELECT count(*) FROM rate_limits;") == "0"
 
-    # ----- key usage reservation (RD-10, RD-13) -----------------------------
-    RESERVE = ("BEGIN; INSERT INTO key_usage (key_id, shard, reserved) VALUES ({k}, {sh}, {b}) "
-               "ON CONFLICT (key_id, shard) DO UPDATE SET reserved = key_usage.reserved + EXCLUDED.reserved; "
-               "SELECT sum(reserved) FROM key_usage WHERE key_id = {k}; COMMIT;")
+    # ----- key usage reservation: strict global hard stop (RD-10, RD-13, CR-9) -----------------
+    # The statements below are TAKEN FROM database-schema.md, so the specification and the test cannot drift apart.
+    spec_text = (HERE / "database-schema.md").read_text()
+    reserve_sql = next(b for b in blocks if "UPDATE key_usage" in b and "RETURNING reserved" in b)
+    register_sql = next(b for b in blocks if "INSERT INTO key_usage (key_id) VALUES ($1)" in b)
+    seal_sql = re.search(r"`(UPDATE key_usage SET reserved = 1073741824 WHERE key_id = \$1;)`", spec_text).group(1)
+    L = 2 ** 30
+    BLOCK = 1024
 
-    def total(k=1):
-        return int(sql(f"SELECT coalesce(sum(reserved),0) FROM key_usage WHERE key_id={k};"))
+    def reserve(k, block=BLOCK, limit=L):
+        """The real reservation statement on its own connection. Returns the new total, or None if refused."""
+        text = reserve_sql.replace("$1", str(k)).replace("$2", str(block)).replace("$3", str(limit))
+        out = sql(text)
+        return int(out) if out else None
 
-    @test("reservation is not undone when the application transaction rolls back")
+    def register(k):
+        sql(register_sql.replace("$1", str(k)))
+
+    def seal(k):
+        sql(seal_sql.replace("$1", str(k)))
+
+    def R(k=1):
+        out = sql(f"SELECT coalesce(sum(reserved),0) FROM key_usage WHERE key_id={k};")
+        return int(out)
+
+    def set_R(k, v):
+        sql(f"INSERT INTO key_usage(key_id, reserved) VALUES ({k},{v}) ON CONFLICT (key_id) DO UPDATE SET reserved = EXCLUDED.reserved;")
+
+    class Refused(Exception):
+        pass
+
+    class Instance:
+        """Model of ONE application instance's allowance. Reservations go to the real PostgreSQL statement."""
+        def __init__(self, key=1, block=BLOCK, limit=L):
+            self.key, self.block, self.limit = key, block, limit
+            self.allowance = 0
+            self.invocations = 0
+
+        def reserve_block(self):
+            total = reserve(self.key, self.block, self.limit)
+            if total is None:
+                raise Refused()
+            self.allowance += self.block
+            return total
+
+        def encrypt(self):
+            if self.allowance == 0:
+                self.reserve_block()          # raises Refused when the hard stop is reached
+            self.allowance -= 1               # every invocation consumes a unit, committed or not
+            self.invocations += 1
+
+    @test("key_usage: one row per key, CHECK at 2^30, negative and over-limit values rejected")
     def _():
         reset_data()
+        register(1); register(1)              # idempotent
+        assert sql("SELECT count(*) FROM key_usage;") == "1"
+        sql(f"INSERT INTO key_usage(key_id, reserved) VALUES (1, 5);", expect_error="key_usage_pkey")
+        sql(f"UPDATE key_usage SET reserved = {L + 1} WHERE key_id = 1;", expect_error="key_usage_reserved_check")
+        sql("UPDATE key_usage SET reserved = -1 WHERE key_id = 1;", expect_error="key_usage_reserved_check")
+        set_R(1, L)                           # exactly 2^30 is allowed
+
+    @test("hard stop: a reservation that takes R exactly to 2^30 is granted, the next is refused")
+    def _():
+        reset_data(); set_R(1, L - BLOCK)
+        assert reserve(1) == L
+        assert reserve(1) is None and R() == L
+
+    @test("hard stop: a reservation that would go beyond 2^30 is refused whole and changes nothing")
+    def _():
+        reset_data(); set_R(1, L - BLOCK // 2)
+        assert reserve(1) is None and R() == L - BLOCK // 2
+        set_R(1, L - 1)
+        assert reserve(1) is None and R() == L - 1
+        assert reserve(1, block=1) == L        # a smaller block that fits is granted
+
+    @test("reservation under an unregistered key is refused")
+    def _():
+        reset_data()
+        assert reserve(7) is None
+
+    @test("concurrent instances: 16 then 32 connections reserve against one key; exactly the available blocks are granted, R never above 2^30")
+    def _():
+        for workers, available in ((16, 40), (32, 64)):
+            reset_data(); set_R(1, L - available * BLOCK)
+            granted = []
+            stop = {"v": False}
+            seen_max = {"v": 0}
+
+            def sampler():
+                while not stop["v"]:
+                    seen_max["v"] = max(seen_max["v"], R())
+                    time.sleep(0.005)
+
+            def instance(i):
+                n = 0
+                for _ in range(available + 5):
+                    if reserve(1) is None:
+                        break
+                    n += 1
+                return n
+
+            with ThreadPoolExecutor(workers + 1) as ex:
+                sf = ex.submit(sampler)
+                counts = list(ex.map(instance, range(workers)))
+                stop["v"] = True; sf.result()
+            assert sum(counts) == available, (workers, sum(counts), available)
+            assert R() == L, R()
+            assert seen_max["v"] <= L, seen_max
+
+    def session(cmds):
+        a = subprocess.Popen(psql_cmd("dc"), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+        a.stdin.write(cmds + "\nSELECT 'ready';\n"); a.stdin.flush()
+        while True:
+            line = a.stdout.readline()
+            assert line != "", "session ended early: " + a.stderr.read()[:200]
+            if "ready" in line:
+                return a
+
+    def finish(a, cmds=""):
+        a.stdin.write(cmds + "\n\\q\n"); a.stdin.flush()
+        out, err = a.communicate(timeout=30)
+        return out.strip()
+
+    @test("negative control: the REPLACED 32-shard design overshoots the limit with two instances (why it was replaced)")
+    def _():
+        reset_data()
+        sql("DROP TABLE IF EXISTS old_key_usage; CREATE TABLE old_key_usage(key_id smallint, shard smallint, reserved bigint, PRIMARY KEY(key_id, shard));")
+        sql(f"INSERT INTO old_key_usage VALUES (1, 0, {L - BLOCK});")           # room for exactly one more block
+        chk = f"SELECT CASE WHEN sum(reserved) + {BLOCK} <= {L} THEN 'room' ELSE 'full' END FROM old_key_usage WHERE key_id=1;"
+        A = session("BEGIN;\n" + chk)
+        B = session("BEGIN;\n" + chk)                                          # both saw room
+        add = lambda sh: f"INSERT INTO old_key_usage VALUES (1,{sh},{BLOCK}) ON CONFLICT (key_id, shard) DO UPDATE SET reserved = old_key_usage.reserved + EXCLUDED.reserved;"
+        finish(A, add(1) + "\nCOMMIT;")
+        finish(B, add(2) + "\nCOMMIT;")                                        # different shards, so no lock conflict
+        total = int(sql("SELECT sum(reserved) FROM old_key_usage;"))
+        assert total == L + BLOCK, total                                        # the old design exceeded 2^30
+        sql("DROP TABLE old_key_usage;")
+
+    @test("the same interleaving with the real statement: the second reservation waits, re-checks, and is refused")
+    def _():
+        reset_data(); set_R(1, L - BLOCK)
+        A = session("BEGIN;\n" + reserve_sql.replace("$1", "1").replace("$2", str(BLOCK)).replace("$3", str(L)))   # A holds the row lock, uncommitted
+        with ThreadPoolExecutor(1) as ex:
+            fut = ex.submit(reserve, 1)                                         # B blocks on the row lock
+            time.sleep(1.0)
+            assert not fut.done(), "B did not wait for A: the reservations are not serialised"
+            finish(A, "COMMIT;")
+            assert fut.result(timeout=30) is None                               # B re-evaluated against the committed total and was refused
+        assert R() == L
+
+    @test("outstanding allowance: A holds a block, B takes the last block, C is refused, nobody exceeds the units reserved")
+    def _():
+        reset_data(); start_R = L - 2 * BLOCK; set_R(1, start_R)
+        A, B, C = Instance(), Instance(), Instance()
+        A.reserve_block()                                  # A holds 1024 unused units
+        B.reserve_block()                                  # B takes the last block, R == 2^30
+        assert R() == L
+        try:
+            C.reserve_block(); raise AssertionError("C should have been refused")
+        except Refused:
+            pass
+        for _ in range(BLOCK): A.encrypt()
+        for _ in range(BLOCK): B.encrypt()
+        for inst in (A, B):
+            try:
+                inst.encrypt(); raise AssertionError("an instance encrypted without a reserved unit")
+            except Refused:
+                pass
+        invocations = A.invocations + B.invocations
+        assert invocations == 2 * BLOCK == R() - start_R and R() == L
+
+    @test("failed and rolled-back transactions still consume units (real rolled-back transactions)")
+    def _():
+        reset_data(); register(1)
+        inst = Instance()
+        for i in range(60):
+            inst.encrypt()                                 # consumed at the invocation
+            sql(f"BEGIN; INSERT INTO games(id,state,config,expires_at) VALUES ('{u(i + 1)}','ACTIVE','{{}}',now()); ROLLBACK;")
+        assert sql("SELECT count(*) FROM games;") == "0"
+        assert inst.invocations == 60 and R() >= inst.invocations and R() == BLOCK
+
+    @test("reservation is not undone when another connection's application transaction rolls back")
+    def _():
+        reset_data(); register(1)
         a = subprocess.Popen(psql_cmd("dc"), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
         a.stdin.write("BEGIN;\n"); a.stdin.write(f"INSERT INTO games(id,state,config,expires_at) VALUES ('{u(1)}','ACTIVE','{{}}',now());\n"); a.stdin.write("SELECT 'ready';\n"); a.stdin.flush()
-        line = a.stdout.readline()
-        assert "ready" in line, line
-        sql(RESERVE.format(k=1, sh=3, b=1024))      # separate connection, own transaction, commits
+        assert "ready" in a.stdout.readline()
+        assert reserve(1) == BLOCK                         # separate connection, own transaction, commits
         a.stdin.write("ROLLBACK;\n\\q\n"); a.stdin.flush(); a.wait(timeout=20)
-        assert total() == 1024, total()
-        assert sql("SELECT count(*) FROM games;") == "0"
+        assert R() == BLOCK and sql("SELECT count(*) FROM games;") == "0"
 
-    @test("reservation survives a failed application transaction (error aborts it)")
+    @test("reservation survives an application transaction aborted by an error")
     def _():
-        reset_data()
-        cmd = [c if c != "ON_ERROR_STOP=1" else "ON_ERROR_STOP=0" for c in psql_cmd("dc")]   # keep the session open after the error
+        reset_data(); register(1)
+        cmd = [c if c != "ON_ERROR_STOP=1" else "ON_ERROR_STOP=0" for c in psql_cmd("dc")]
         a = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
         a.stdin.write("BEGIN;\nSELECT 1/0;\nSELECT 'ready';\n"); a.stdin.flush()
-        sql(RESERVE.format(k=1, sh=1, b=1024))
+        assert reserve(1) == BLOCK
         a.stdin.write("ROLLBACK;\n\\q\n"); a.stdin.flush(); a.communicate(timeout=20)
-        assert total() == 1024, total()
+        assert R() == BLOCK
 
-    @test("eight parallel instances, 100 reservations each: no lost increment")
+    @test("crash and restart with an unused allowance: the counter does not decrease and still covers every invocation")
     def _():
-        reset_data()
+        reset_data(); register(1)
+        a = Instance()
+        for _ in range(10): a.encrypt()
+        before = R()
+        del a                                              # crash: the 1014 unused units are lost, but stay counted
+        assert R() == before == BLOCK
+        b = Instance()
+        for _ in range(5): b.encrypt()                     # restarted instance reserves a fresh block
+        assert R() == 2 * BLOCK and 15 <= R()
+
+    @test("eight instances, 100 reservations each, no lost increment")
+    def _():
+        reset_data(); register(1)
         def instance(i):
-            rnd = random.Random(i)
-            body = "".join(RESERVE.format(k=1, sh=rnd.randrange(32), b=1024) + "\n" for _ in range(100))
-            r = run(psql_cmd("dc") + ["-f", "-"], input=body)
-            assert r.returncode == 0, r.stderr[:200]
+            for _ in range(100):
+                assert reserve(1) is not None
         with ThreadPoolExecutor(8) as ex:
             list(ex.map(instance, range(8)))
-        assert total() == 8 * 100 * 1024, total()
+        assert R() == 8 * 100 * BLOCK
 
-    @test("policy model: reserved total never below actual encryptions under random interleavings, rollbacks and crashes")
+    @test("thresholds with the real statement: warning, rotation overdue (still granted), then refusal at the hard stop")
+    def _():
+        reset_data(); register(1)
+        hard, warn, rot = 10 * BLOCK, 3 * BLOCK, 6 * BLOCK
+        states, granted = [], 0
+        for _ in range(12):
+            total = reserve(1, BLOCK, hard)
+            if total is None:
+                states.append("refused"); continue
+            granted += 1
+            states.append("overdue" if total >= rot else "warning" if total >= warn else "ok")
+        assert granted == 10 and R() == hard
+        assert states[0] == "ok" and "warning" in states and "overdue" in states
+        assert states[5:10] == ["overdue"] * 5, states           # reservations still granted between 2^28 and 2^30 (RD-14)
+        assert states[10:] == ["refused", "refused"], states
+
+    @test("start-up validation rule: hard stop <= 2^30, multiple of the block, WARN <= ROTATE <= HARD")
+    def _():
+        def valid(warn, rot, hard, block):
+            return warn <= rot <= hard <= L and hard % block == 0 and block <= 2 ** 20 and L % block == 0
+        assert valid(2 ** 27, 2 ** 28, L, 1024)
+        assert not valid(2 ** 27, 2 ** 28, L + 1024, 1024)
+        assert not valid(2 ** 27, 2 ** 28, L - 1, 1024)
+        assert not valid(2 ** 29, 2 ** 28, L, 1024)
+
+    @test("policy model: R is never below actual encryptions under random interleavings, rollbacks and crashes")
     def _():
         rnd = random.Random(2026)
-        BLOCK = 8
+        B = 8
         for trial in range(300):
             db_total, performed = 0, 0
             inst = [{"allow": 0} for _ in range(rnd.randrange(1, 6))]
@@ -305,69 +511,59 @@ try:
                 i = rnd.choice(inst)
                 op = rnd.choices(["encrypt", "rollback_after_encrypt", "crash", "reserve_unknown"], [6, 3, 1, 1])[0]
                 if op in ("encrypt", "rollback_after_encrypt"):
-                    if i["allow"] < 1:            # must reserve before encrypting
-                        db_total += BLOCK; i["allow"] += BLOCK
-                    i["allow"] -= 1; performed += 1   # invocation consumes a unit even if the transaction rolls back
+                    if i["allow"] < 1:
+                        db_total += B; i["allow"] += B
+                    i["allow"] -= 1; performed += 1
                 elif op == "crash":
-                    i["allow"] = 0                # unused allowance lost: over-count only
+                    i["allow"] = 0
                 else:
-                    db_total += BLOCK             # reservation committed but outcome unknown: not used, over-count only
+                    db_total += B
                 assert db_total >= performed, (trial, step, db_total, performed)
-            assert db_total - performed <= (len(inst) * 2 + 400) * BLOCK  # overshoot stays bounded
 
-    @test("policy model: thresholds warn, flag rotation, then refuse at the hard stop permanently")
-    def _():
-        WARN, ROT, HARD, BLOCK = 20, 40, 80, 10
-        total_, state, refused = 0, [], False
-        for _ in range(12):
-            total_ += BLOCK
-            if total_ > HARD:
-                refused = True; state.append("refuse"); continue   # block discarded, counter stays high
-            state.append("rotate" if total_ >= ROT else "warn" if total_ >= WARN else "ok")
-        assert state[:1] == ["ok"] and "warn" in state and "rotate" in state and refused and state[-1] == "refuse"
-
-    @test("invariant check: rows under a key cannot exceed its reserved total; a lowered counter is detected")
+    @test("invariant check: rows under a key cannot exceed R; a lowered counter is detected")
     def _():
         reset_data(); new_game(1); new_player(11, 1, 1); new_player(12, 1, 2)
-        sql(RESERVE.format(k=1, sh=0, b=1024))
+        register(1); assert reserve(1) == BLOCK
         sql(f"INSERT INTO secret_codes(player_id,key_id,ciphertext) VALUES ('{u(11)}',1,decode(repeat('01',32),'hex')),('{u(12)}',1,decode(repeat('02',32),'hex'));")
         inv = ("SELECT (SELECT count(*) FROM secret_codes WHERE key_id=1) + (SELECT count(*) FROM guesses WHERE key_id=1) "
                "+ (SELECT count(*) FROM token_rotations WHERE token_key_id=1) <= (SELECT coalesce(sum(reserved),0) FROM key_usage WHERE key_id=1);")
         assert sql(inv) == "t"
         sql("UPDATE key_usage SET reserved = 1;")
         assert sql(inv) == "f"
-        sql("UPDATE key_usage SET reserved = 0 WHERE false;")  # no-op, keeps statement count stable
 
-    @test("key_usage: shard range and negative counts rejected")
+    @test("sealing: the old key is refused for ever and sealing never lowers a counter")
     def _():
-        reset_data()
-        sql("INSERT INTO key_usage(key_id,shard,reserved) VALUES (1,32,1);", expect_error="key_usage_shard_check")
-        sql("INSERT INTO key_usage(key_id,shard,reserved) VALUES (1,1,-1);", expect_error="key_usage_reserved_check")
+        reset_data(); register(1); assert reserve(1) == BLOCK
+        seal(1)
+        assert R() == L and reserve(1) is None
+        seal(1); assert R() == L
 
-    @test("restore hazard: a cold-backup restore rolls the counter back, so a new key is required (RD-13)")
+    @test("restore hazard and recovery: restored counter is behind, sealing the old key and registering a new key stops it resuming (RD-13)")
     def _():
-        reset_data()
-        sql(RESERVE.format(k=1, sh=0, b=1024))
+        reset_data(); register(1); assert reserve(1) == BLOCK
         stop(); backup = work / "backup"
         shutil.copytree(data, backup); start()
-        before_backup = total()
-        for _ in range(5):
-            sql(RESERVE.format(k=1, sh=1, b=1024))      # encryptions after the backup
-        pre_restore = total()
+        before_backup = R()
+        for _ in range(5): assert reserve(1) is not None   # encryptions reserved after the backup
+        pre_restore = R()
         stop(); shutil.rmtree(data); shutil.copytree(backup, data); start()   # restore
-        restored = total()
+        restored = R()
         assert pre_restore > restored == before_backup, (pre_restore, restored, before_backup)
-        # restore procedure decision (deployment.md 6.1 step 5): new key unless proved lossless
         def must_activate_new_key(pre, rest):
             return not (pre is not None and pre <= rest)
-        assert must_activate_new_key(pre_restore, restored) is True
-        assert must_activate_new_key(restored, restored) is False       # proved lossless path
-        assert must_activate_new_key(None, restored) is True            # unknown pre-restore state: do it
-        # new key starts with no usage, the old key's rows keep decrypting (DECRYPT_ONLY)
-        assert total(2) == 0
-        ring = {"generation": 8, "active": 2, "keys": {"1": {"status": "DECRYPT_ONLY", "deactivatedAt": "2027-01-01T00:00:00Z"}, "2": {"status": "ACTIVE", "deactivatedAt": None}}}
-        actives = [k for k, v in ring["keys"].items() if v["status"] == "ACTIVE"]
-        assert actives == ["2"] and all(v["deactivatedAt"] is None for k, v in ring["keys"].items() if v["status"] == "ACTIVE")
+        assert must_activate_new_key(pre_restore, restored) and not must_activate_new_key(restored, restored) and must_activate_new_key(None, restored)
+        # without the procedure the restored counter would let the old key resume: prove the hazard
+        assert reserve(1) is not None
+        # the procedure: new key registered and sealing of every older key, even though the (model) ring wrongly still lists key 1 as active
+        register(2); seal(1)
+        ring_wrongly_active = Instance(key=1)
+        try:
+            ring_wrongly_active.encrypt(); raise AssertionError("encryption resumed under the sealed key")
+        except Refused:
+            pass
+        new_inst = Instance(key=2)
+        new_inst.encrypt()
+        assert R(2) == BLOCK and R(1) == L
 
 finally:
     stop()

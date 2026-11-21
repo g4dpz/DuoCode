@@ -17,7 +17,7 @@ games 1 ──< players 1 ── 0..1 secret_codes        (encrypted)
   └── 0..1 rematch_markers (original_game_id) ── 0..1 games (the rematch, link cleared when it is deleted)
 
 rate_limits (independent, shared by all instances)
-key_usage   (independent, counts encryptions per key)
+key_usage   (independent, one authoritative row per key: reserved encryption units)
 ```
 
 ## 2. DDL
@@ -161,11 +161,10 @@ CREATE TABLE rate_limits (                              -- shared token buckets,
 );
 CREATE INDEX rate_limits_refilled_idx ON rate_limits (refilled_at);
 
-CREATE TABLE key_usage (                                  -- encryptions RESERVED per key, sharded to avoid a hot row (RD-10, RD-13)
-  key_id    smallint NOT NULL,
-  shard     smallint NOT NULL CHECK (shard BETWEEN 0 AND 31),
-  reserved  bigint NOT NULL DEFAULT 0 CHECK (reserved >= 0),   -- only ever increases. Over-counts, never under-counts
-  PRIMARY KEY (key_id, shard)
+CREATE TABLE key_usage (                                  -- ONE authoritative row per key: encryption units RESERVED (RD-10, RD-13, CR-9)
+  key_id    smallint PRIMARY KEY,
+  reserved  bigint NOT NULL DEFAULT 0
+            CHECK (reserved >= 0 AND reserved <= 1073741824)   -- absolute backstop: 2^30. No statement can exceed it
 );
 
 CREATE TABLE schema_migrations (
@@ -180,7 +179,7 @@ Notes:
 - `players.guesses_used` equals the count of that player's `guesses` rows. The service updates both in one transaction. A consistency test checks it.
 - The nickname constraints implement R1.3(c) and (d) as a backstop. Trimming and the other rules are application-level because PostgreSQL has no Unicode `White_Space` test.
 - The rematch marker is a separate row keyed by the original game. Its primary key is what makes "one rematch ever" a database rule (R9.4). Deleting the rematch game clears `rematch_game_id` and leaves the row, so the original can never have a second rematch. Deleting the original deletes the marker, and the rematch game, which has no foreign key to the original, continues as an ordinary game (R9.8). `rematchOf` in the API is derived by looking up the marker whose `rematch_game_id` equals the game.
-- `key_usage` counts **reservations**, not completed encryptions. An instance reserves a block of encryptions in its own short autocommit transaction, committed before it performs any encryption from that block, so the reservation can never be rolled back with an application transaction. The total for a key is the sum over its shards. Statement and properties in section 6.2. The shard rows are touched only by those autocommit statements (lock level L0 in `design.md` section 8.2).
+- `key_usage` counts **reserved units**, not completed encryptions, in **one row per key**. The row is the single authoritative counter and the single serialisation point for every reservation under that key, from every instance. The earlier 32-shard design was **replaced** (section 6.2 explains why). An instance reserves a block of units in its own short autocommit transaction, committed before it performs any encryption from that block, so a reservation can never be rolled back with an application transaction. The `CHECK` constant 2^30 is an absolute database-level ceiling that holds even if an application instance is misconfigured. The row is touched only by the reservation statement, the key-registration insert and the sealing update (lock level L0 in `design.md` section 8.2).
 - Credentials of the original game (including the rematch capabilities) reference the original game and its players and are deleted with it. A rematch game has its own `players` and `credentials` rows. Nothing links its credentials to the original game (R9.3).
 - No credential record is kept after its game is deleted (R8.8).
 - Nonces and ciphertexts: every encryption uses a fresh random 96-bit nonce. See `security-assessment.md` section 3.
@@ -206,7 +205,7 @@ Notes:
 | Completed state has a completion time | `CHECK` on `games` | |
 | Nickname length, control characters, bidi embedding, override and isolate controls | `CHECK` constraints | Trim, empty, malformed Unicode |
 | Rate-limit bucket unique per subject | Primary key `(scope, subject)` | |
-| One counter row per key and shard, never negative | Primary key and `CHECK` of `key_usage` | Shard choice, monotonic increase (only the reservation statement writes), threshold policy |
+| One authoritative counter row per key, never negative, never above 2^30 | Primary key and `CHECK` of `key_usage` | The conditional reservation statement (section 6.2), monotonic increase, threshold policy |
 
 Not expressible as simple constraints and covered by service logic plus tests: a game is `ACTIVE` only with two players and two codes, a game is `COMPLETED` only when both players are finished, and `game_results` exists only for completed games.
 
@@ -272,29 +271,78 @@ RETURNING tokens;
 - Rows idle for more than an hour are deleted by cleanup (section 7). A bucket full again behaves like a new one.
 - Scope names and values are in `deployment.md`, section 4.
 
-### 6.2 Key usage reservation (RD-10, RD-13)
+### 6.2 Key usage reservation: strict global hard stop (RD-10, RD-13, CR-9)
 
-An instance keeps an in-memory allowance per key id. Before it performs an encryption, the allowance must be positive, and each encryption invocation consumes one unit (whether or not the surrounding transaction later commits). An operation needing `n` encryptions makes sure `allowance >= n` **before its transaction begins**. When the allowance is too small the instance reserves a block of `KEY_USAGE_BLOCK` (default 1024) in a short, separate autocommit transaction:
+**Terms.** These three words are used with exactly these meanings in every document.
+
+| Term | Meaning |
+|---|---|
+| Reserved unit | One permitted encryption, counted in `key_usage.reserved` for a key. The counter `R` is the number of reserved units |
+| Encryption invocation | One actual call that encrypts a value with the key. Each invocation consumes exactly one reserved unit that the calling instance holds |
+| Allowance | The reserved units one instance holds in memory and has not yet consumed |
+
+`R` counts every unit ever reserved: units consumed by invocations (whether or not the surrounding transaction committed), units still sitting in instance allowances, and units lost when an instance crashed or restarted. So `R >= invocations`. The counter may overestimate use. It can never underestimate it.
+
+**Design: one authoritative row, one atomic conditional statement.** The 32-shard design of the revision 3.1 draft is **replaced**. With shards, each reservation updated its own shard row, so two instances working on different shards could each see room below the limit and both reserve, and the check of the total across shards was not atomic. A single row per key removes that: every reservation under a key updates the same row, PostgreSQL's row lock serialises them, and the limit check is part of the same statement. The cost is one contended row per key, hit once per `KEY_USAGE_BLOCK` encryptions per instance. At the expected volume that is negligible, and correctness is chosen over contention (owner instruction).
+
+**Key registration** (once per key, idempotent, when the key first appears in the ring):
 
 ```sql
-BEGIN;
-INSERT INTO key_usage (key_id, shard, reserved)
-VALUES ($1, $2, $3)                                   -- $2 random shard 0..31, $3 block size
-ON CONFLICT (key_id, shard) DO UPDATE SET reserved = key_usage.reserved + EXCLUDED.reserved;
-SELECT sum(reserved) AS total FROM key_usage WHERE key_id = $1;
-COMMIT;
+INSERT INTO key_usage (key_id) VALUES ($1) ON CONFLICT (key_id) DO NOTHING;
 ```
 
-Rules:
-- The block is added to the allowance only after the transaction has committed and returned. If the outcome is unknown (connection lost), the instance treats the reservation as failed and does not use it. The counter may have gone up. That is an over-count, which is safe.
-- The returned `total` decides the policy: at or above the warning threshold the warning metric and log are raised, at or above the rotation threshold the key is reported as overdue for rotation (health shows degraded), and above the hard stop the instance discards the block and refuses to encrypt under that key (`503`). The counter stays high, so the refusal is permanent for that key.
-- Rolled-back or failed application transactions: the reservation was committed earlier on its own, so nothing is undone. Units consumed by encryptions in a failed transaction stay consumed.
-- Crash or restart: the unused part of an instance's allowance is lost. It was already counted, so the counter over-counts by at most `KEY_USAGE_BLOCK` per instance start per key.
-- Several instances: each reserves its own blocks. The `INSERT ... ON CONFLICT` increments are atomic, so no reservation is lost. Two instances can overshoot a threshold by at most one block each. Thresholds sit far below the cryptographic limit (`security-assessment.md` section 3.3a), so that is acceptable.
-- Never underestimates: the invariant is `sum(reserved) >= encryptions actually performed under the key`, for as long as the database content is not restored from an earlier state. After a restore it can fail, and that is why a restore activates a new key (`deployment.md` section 6.1, R10.13).
-- Contention: one reservation per `KEY_USAGE_BLOCK` encryptions, spread over 32 shards. Negligible at expected load.
-- `keys:verify` checks the invariant `rows under the key <= sum(reserved)` per key (every stored ciphertext was an encryption). A violation means the counter lost data and fails verification.
-- The reservation statements are issued on a separate connection from the request transaction, before it begins. They hold a shard row lock for one statement and never while waiting for any other lock (`design.md` section 8.2).
+**Reservation statement** (one statement, its own autocommit transaction, on a connection separate from the request transaction):
+
+```sql
+UPDATE key_usage
+SET reserved = reserved + $2                          -- $2 = KEY_USAGE_BLOCK
+WHERE key_id = $1
+  AND reserved + $2 <= $3                             -- $3 = configured hard stop, at most 2^30, a multiple of $2
+RETURNING reserved;                                   -- the new total R
+```
+
+- One returned row means the block of `$2` units was granted, and the row holds the new total. No returned row means the block was refused and nothing changed.
+- The block is added to the instance's allowance only after the statement has returned. If the outcome is unknown (connection lost), the instance treats it as refused and does not use the block. The counter may have gone up. That is an over-count, which is safe.
+- A refusal is whole-block. There are no partial grants, because `$3` is a multiple of `$2` (validated at start-up, `design.md` section 13), so `R` can reach exactly `$3` and any further block is refused.
+- If the key row does not exist, the statement matches no row and is treated as a refusal. Registration creates it.
+
+**Why the hard stop is strict.** In PostgreSQL `READ COMMITTED`, an `UPDATE` takes a row lock. A second `UPDATE` of the same row waits for the first to commit, then re-evaluates its `WHERE` clause against the newly committed row before it changes anything. The comparison `reserved + $2 <= $3` is therefore always made against the latest total. Two instances cannot both be granted the last block. On top of that, the `CHECK (reserved <= 1073741824)` constraint makes any write above 2^30 fail even if an instance were misconfigured with a larger `$3`.
+
+**Guarantees** (each is tested against PostgreSQL, `test-strategy.md` TS-ENC and TS-CONC):
+
+| # | Guarantee | How |
+|---|---|---|
+| G1 | `R` never exceeds 2^30 for any key | The statement's `WHERE` guard, and the `CHECK` constraint as a backstop |
+| G2 | Every encryption invocation consumes one previously reserved unit, including in transactions that fail or roll back | The vault decrements the allowance at the invocation. The reservation committed earlier and independently |
+| G3 | All outstanding allowances are inside `R` | A unit enters an allowance only after it was added to `R` |
+| G4 | No instance obtains units that take `R` beyond the hard stop | The guard is evaluated atomically against the latest `R` under the row lock |
+| G5 | Concurrent reservations cannot pass the limit independently | One row per key. Sharding is removed |
+| G6 | An instance never encrypts with an exhausted allowance | The vault's consume step fails when the allowance is zero. The only way to refill it is a granted reservation |
+| G7 | A restore cannot let encryption resume under a key whose counter may have rolled back | The restore procedure seals the old key (below) and activates a new one before traffic |
+| G8 | `R` can overestimate, never underestimate | Units are reserved before use. Crashes, restarts and unknown outcomes only add unused units |
+
+Consequence of G1 to G4: the number of encryption invocations under a key can never exceed 2^30, even though instances hold allowances and run concurrently, because every invocation needs a unit and at most 2^30 units exist.
+
+**Threshold behaviour** (thresholds apply to `R`, the reserved units, after each granted reservation):
+
+| Threshold | `R` reaches | Behaviour |
+|---|---|---|
+| Warning | 2^27 (134,217,728) | The warning metric `duocode_key_usage_state{key_id}` becomes `WARNING`, one operational warning is logged per key per process start, and `/healthz` stays ready but reports `keyUsage: warning`. Reservations continue normally |
+| Rotation required | 2^28 (268,435,456) | State `ROTATION_OVERDUE`: a critical alert is raised, `/healthz` reports degraded (still HTTP 200 so the service is not taken out of rotation), and the key must be rotated. **Reservations under this key continue to be granted until the hard stop** (RD-14, proposed). This keeps the game available while the owners rotate, and the cryptographic margin remains large (collision probability about 2^-41 at 2^28, 2^-37 at 2^30). A rotation makes the old key `DECRYPT_ONLY` and seals it, which refuses all further reservations under it |
+| Hard stop | 2^30 (1,073,741,824) | `R + block` would exceed the limit, so the statement returns no row. No further units exist. After each instance consumes the units it already holds, no further encryption occurs under the key. Operations that need to encrypt fail closed with `503`. Decryption of existing data is unaffected. `/healthz` reports not ready for writes until a new key is active |
+
+`R` can equal 2^30 exactly: the limit is inclusive of the last unit, so at most 2^30 encryptions ever happen under a key. A block that would take `R` above 2^30 is refused whole. If the owners want a stop strictly before 2^30, set `KEY_USAGE_HARD_STOP` lower. The statement and the proof do not change.
+
+**Sealing a key** (`deno task keys:seal <key_id>`): `UPDATE key_usage SET reserved = 1073741824 WHERE key_id = $1;`. After this, every reservation under the key is refused, whatever the ring says. Sealing is used (a) at every planned rotation, after all instances run the new ring, and (b) at every restore, immediately (`deployment.md` section 6.1). Units already held in allowances stay valid, because they were counted before, and only matter for the instances that still run. Sealing never decreases a counter.
+
+**Restore (G7).** A restore from backup rolls `key_usage` back in time, so `R` may be lower than the encryptions really performed after the backup. The restore procedure therefore (1) activates a new key in the ring as the only `ACTIVE` key, (2) seals every older key, which burns its restored counter up to the limit so that even a mistaken ring cannot make it reserve again, and (3) restarts all instances, which discards every in-memory allowance. Old keys stay in the ring for decryption only (`security-assessment.md` section 3.6).
+
+**Other rules.**
+- Rolled-back or failed application transactions: the reservation committed earlier on its own, so nothing is undone. Units consumed in a failed transaction stay consumed.
+- Crash or restart: the unused part of an instance's allowance is lost, and stays counted. The counter over-counts by at most `KEY_USAGE_BLOCK` per instance start per key.
+- Contention: one statement per `KEY_USAGE_BLOCK` (1024) encryptions per instance. Negligible.
+- `keys:verify` checks the invariant `ciphertext rows under the key <= R` per key and fails if it is violated.
+- The statement runs on a separate connection from the request transaction, before it begins. It holds the key row lock for one statement and never while waiting for any other lock (`design.md` section 8.2).
 
 ## 7. Cleanup
 
@@ -351,7 +399,7 @@ Backups retain deleted data until they age out (35 days maximum, R11.9). After a
 | Request fingerprints | Derived from guesses | HMAC keyed from the key ring | Plain hashes would be reversible (RD-8) |
 | Idempotency key and response | Operational | plaintext | Response holds no code and no guess |
 | Client IP addresses | Not stored by the application | `rate_limits` rows hold an HMAC only (pseudonymised personal data), deleted one hour after last use, excluded from backups (CH-2) | Proxy logs hold none (`deployment.md`). See `security-assessment.md` section 6.2 |
-| Encryption counts | Operational | `key_usage` counters per key id | No personal data |
+| Encryption counts | Operational | `key_usage`: one row per key id with the reserved unit total | No personal data |
 
 ## 9. Migration strategy
 
