@@ -42,7 +42,7 @@ for fn,t in files.items():
 check(f'C03 every TS group and TS-CONC id referenced is defined ({len(defined)} groups, {len(conc_def)} concurrency scenarios)',pr)
 # 4 decision ids
 reg=req
-ids={'ND':9,'C':7,'CL':8,'RD':14,'OD':10,'CR':12,'CH':6}
+ids={'ND':9,'C':7,'CL':8,'RD':14,'OD':10,'CR':13,'CH':6}
 pr=[]
 for fn,t in files.items():
     for k,mx in ids.items():
@@ -222,14 +222,17 @@ def cfgval(k):
     m=re.search(r'\| `'+k+r'` \| `(\d+)`',dsg); return int(m.group(1)) if m else None
 w,r_,h,b=cfgval('KEY_USAGE_WARN'),cfgval('KEY_USAGE_ROTATE_BY'),cfgval('KEY_USAGE_HARD_STOP'),cfgval('KEY_USAGE_BLOCK')
 if (w,r_,h)!=(2**27,2**28,2**30): pr.append(f'threshold defaults {w},{r_},{h} are not 2^27, 2^28, 2^30')
-if not b or h%b!=0: pr.append('hard stop is not a multiple of the block')
+if h is None or b is None: pr.append('KEY_USAGE_HARD_STOP or KEY_USAGE_BLOCK default missing or not numeric')
+elif b<1 or h%b!=0: pr.append('hard stop is not a positive multiple of the block')
 if 'reserved + $2 <= $3' not in files['database-schema.md']: pr.append('reservation statement guard missing in database-schema.md')
 if 'AND NOT sealed' not in files['database-schema.md']: pr.append('reservation statement does not check the sealed flag')
 if 'fingerprint bytea NOT NULL UNIQUE' not in files['database-schema.md']: pr.append('key_usage.fingerprint UNIQUE missing')
 if 'INSERT INTO key_usage (key_id, fingerprint) VALUES ($1, $2)' not in files['database-schema.md']: pr.append('registration statement lacks the fingerprint')
 for fn in ('security-assessment.md','deployment.md','design.md','database-schema.md','requirements.md'):
     if 'STAGED' not in files[fn]: pr.append(f'{fn} does not describe the STAGED ring status')
-if 'KEY_SEAL_DRAIN_SECONDS' not in files['design.md'] or 'KEY_SEAL_DRAIN_SECONDS' not in files['deployment.md']: pr.append('KEY_SEAL_DRAIN_SECONDS missing')
+if 'FOR SHARE' not in files['database-schema.md'] or 'commit-time check' not in files['design.md'] or 'commit-time check' not in files['deployment.md']: pr.append('commit-time check under a share lock missing')
+if 'WHERE key_usage.fingerprint = EXCLUDED.fingerprint' not in files['database-schema.md']: pr.append('registration does not reject a mismatched fingerprint')
+if 'fingerprintHistory' not in files['deployment.md']: pr.append('restore does not seal from the fingerprint history')
 if 'fingerprintHistory' not in files['security-assessment.md']: pr.append('ring fingerprintHistory missing')
 if 'AND $2 > 0' not in files['database-schema.md']: pr.append('reservation statement does not reject zero or negative requests')
 if 'ON CONFLICT (key_id) DO UPDATE SET reserved = 1073741824, sealed = true' not in files['database-schema.md']: pr.append('seal statement does not insert a missing row')
@@ -249,7 +252,7 @@ for fn in spec:
     for i,l in enumerate(files[fn].splitlines(),1):
         if re.search(r'shard',l,re.I) and not re.search(r'replac|draft|old_key_usage|negative control|removed|without shard|With shards|sharding',l,re.I):
             pr.append(f'{fn}:{i}: shard mentioned as current design: {l.strip()[:90]}')
-for need in ('keys:seal','TS-CONC-21','TS-CONC-22','TS-CONC-23','TS-CONC-24','TS-CONC-25','TS-CONC-26','TS-CONC-27'):
+for need in ('keys:seal','TS-CONC-21','TS-CONC-22','TS-CONC-23','TS-CONC-24','TS-CONC-25','TS-CONC-26','TS-CONC-27','TS-CONC-28'):
     if need not in files['test-strategy.md'] and need not in files['deployment.md']: pr.append(f'{need} missing')
 if 'RD-14' not in files['requirements.md'] or 'CR-9' not in files['requirements.md']: pr.append('RD-14 or CR-9 missing from the register')
 check('C23 key usage design is consistent: one authoritative row per key, CHECK at 2^30, thresholds 2^27 / 2^28 / 2^30, strict statement, terms defined, sharding only mentioned as replaced',pr)

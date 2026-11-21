@@ -261,6 +261,7 @@ try:
     register_sql = next(b for b in blocks if "INSERT INTO key_usage (key_id, fingerprint) VALUES ($1, $2)" in b)
     seal_sql = re.search(r"`(INSERT INTO key_usage \(key_id, fingerprint, reserved, sealed\) VALUES \(\$1, \$2, 1073741824, true\) ON CONFLICT \(key_id\) DO UPDATE SET reserved = 1073741824, sealed = true;)`", spec_text).group(1)
     check_sql = next(b for b in blocks if "SELECT NOT sealed AS usable FROM key_usage" in b)
+    commit_check_sql = next(b for b in blocks if "SELECT sealed FROM key_usage WHERE key_id = $1 FOR SHARE" in b).strip()
     L = 2 ** 30
     BLOCK = 1024
 
@@ -414,17 +415,20 @@ try:
     def _():
         reset_data(); set_R(1, L - BLOCK)
         A = session("BEGIN;\n" + reserve_sql.replace("$1", "1").replace("$2", str(BLOCK)).replace("$3", str(L)))   # A holds the row lock, uncommitted
+        bounded = "SET lock_timeout = '20s';\n" + reserve_sql.replace("$1", "1").replace("$2", str(BLOCK)).replace("$3", str(L))
+        ex = ThreadPoolExecutor(1)
         try:
-            with ThreadPoolExecutor(1) as ex:
-                fut = ex.submit(reserve, 1)                                     # B blocks on the row lock
-                time.sleep(1.0)
-                waited = not fut.done()
-                finish(A, "COMMIT;"); A = None                                  # always release A, even if the assertion below fails (CR-11)
-                assert fut.result(timeout=30) is None                           # B re-evaluated against the committed total and was refused
-                assert waited, "B did not wait for A: the reservations are not serialised"
+            fut = ex.submit(lambda: sql(bounded))                               # B blocks on the row lock, bounded by lock_timeout
+            time.sleep(1.0)
+            waited = not fut.done()
         finally:
-            if A is not None:
-                finish(A, "ROLLBACK;")
+            finish(A, "COMMIT;")                                                # release A BEFORE the executor shuts down (CR-13)
+        try:
+            out = fut.result(timeout=40)
+        finally:
+            ex.shutdown(wait=False)
+        assert out.replace("SET", "").strip() == "", out                       # B re-evaluated against the committed total and was refused
+        assert waited, "B did not wait for A: the reservations are not serialised"
         assert R() == L
 
     @test("outstanding allowance: A holds a block, B takes the last block, C is refused, nobody exceeds the units reserved")
@@ -519,12 +523,13 @@ try:
     @test("start-up validation rule: hard stop <= 2^30, multiple of the block, WARN <= ROTATE <= HARD")
     def _():
         def valid(warn, rot, hard, block):
-            return warn <= rot <= hard <= L and block >= 1 and hard % block == 0 and block <= 2 ** 20 and L % block == 0
+            return warn <= rot <= hard <= L and block >= 1 and hard % block == 0 and block <= 2 ** 20
         assert valid(2 ** 27, 2 ** 28, L, 1024)
         assert not valid(2 ** 27, 2 ** 28, L + 1024, 1024)
         assert not valid(2 ** 27, 2 ** 28, L - 1, 1024)
         assert not valid(2 ** 29, 2 ** 28, L, 1024)
         assert not valid(2 ** 27, 2 ** 28, L, 0) and not valid(2 ** 27, 2 ** 28, L, -1024)
+        assert valid(2 ** 27, 2 ** 28, 268435458, 3)        # a block only has to divide the configured hard stop (CR-13)
 
     @test("policy model: R is never below actual encryptions under random interleavings, rollbacks and crashes")
     def _():
@@ -761,6 +766,92 @@ try:
         new_id = ring_newest["highestKeyId"] + 1                      # a new key never reuses an identifier
         assert new_id == 3
         register(new_id); assert usable(new_id) is True and reserve(new_id) == BLOCK
+
+    @test("commit-time check: the seal waits for a transaction holding the key row FOR SHARE; a transaction checking after the seal reads sealed and rolls back (CR-13)")
+    def _():
+        reset_data(); register(1); new_game(1); new_player(11, 1, 1)
+        chk = commit_check_sql.replace("$1", "1")
+        T = session("BEGIN;\n"
+                    f"INSERT INTO secret_codes(player_id,key_id,ciphertext) VALUES ('{u(11)}',1,decode(repeat('01',32),'hex'));\n" + chk)
+        ex = ThreadPoolExecutor(1)
+        try:
+            fut = ex.submit(lambda: sql("SET lock_timeout = '20s';\n" + seal_sql.replace("$1", "1").replace("$2", fp(1))))
+            time.sleep(1.0)
+            seal_waited = not fut.done()
+        finally:
+            finish(T, "COMMIT;")                         # T saw 'f' and commits its ciphertext BEFORE the seal
+        try:
+            fut.result(timeout=40)
+        finally:
+            ex.shutdown(wait=False)
+        assert seal_waited, "the seal did not wait for the transaction in its commit-time check"
+        assert usable(1) is False and sql("SELECT count(*) FROM secret_codes WHERE key_id=1;") == "1"
+        # a later transaction reaches its check after the seal: it must see 'sealed' and roll back
+        new_player(12, 1, 2)
+        out = sql("BEGIN;\n"
+                  f"INSERT INTO secret_codes(player_id,key_id,ciphertext) VALUES ('{u(12)}',1,decode(repeat('02',32),'hex'));\n"
+                  + chk + "\nROLLBACK;")                # the application rolls back when it reads 't'
+        assert out.strip().splitlines()[-1] == "t", out
+        assert sql("SELECT count(*) FROM secret_codes WHERE key_id=1;") == "1"   # nothing committed after the seal
+
+    @test("registration: idempotent for the same material, refused for different material on the same id or the same material on a new id (CR-13)")
+    def _():
+        reset_data()
+        assert register(1, material="A") == "1"            # new
+        assert register(1, material="A") == "1"            # repeat after an interrupted run: same material, row returned
+        assert register(1, material="B") == ""             # same id, different material: no row, nothing changed
+        assert sql(f"SELECT fingerprint = {fp(1, 'A')} FROM key_usage WHERE key_id=1;") == "t"
+        register(2, material="A", expect_error="key_usage_fingerprint_key")
+        next_id = max(2, int(sql("SELECT max(key_id) FROM key_usage;"))) + 1   # above ring highestKeyId (2 here) and the registry
+        assert next_id == 3
+
+    @test("restore seals every identifier in the fingerprint history, restoring the registry for a key retired early (CR-13)")
+    def _():
+        reset_data()
+        register(1, material="A"); register(2, material="B"); assert reserve(2) == BLOCK
+        stop(); backup = work / "backup3"; shutil.copytree(data, backup); start()
+        register(3, material="C"); assert reserve(3) == BLOCK               # key 3 registered after the backup ...
+        history = {1: "A", 2: "B", 3: "C"}                                  # ... then retired early and removed from the ring (history keeps it)
+        stop(); shutil.rmtree(data); shutil.copytree(backup, data); start()  # restore
+        assert sql("SELECT count(*) FROM key_usage WHERE key_id=3;") == "0"
+        for kid, mat in history.items():                                    # S = every id in the history, before the new key
+            seal(kid, material=mat)
+        assert usable(3) is False and R(3) == L
+        register(4, material="C", expect_error="key_usage_fingerprint_key")  # the registry backstop is back
+        assert register(4, material="D") == "4" and usable(4) is True
+
+    @test("lossless proof covers every key that can still encrypt, including STAGED keys (CR-13 rule)")
+    def _():
+        def lossless(pre, restored, can_encrypt):
+            for k in can_encrypt:
+                if k not in restored: return False
+                if restored[k]["sealed"] != pre[k]["sealed"]: return False
+                if restored[k]["reserved"] < pre[k]["reserved"]: return False
+            return True
+        pre = {1: {"reserved": 5000, "sealed": False}, 2: {"reserved": 1, "sealed": False}}
+        assert lossless(pre, dict(pre), [1, 2]) is True
+        assert lossless(pre, {1: pre[1]}, [1, 2]) is False                  # staged key 2's row missing
+        assert lossless(pre, {1: pre[1], 2: {"reserved": 0, "sealed": False}}, [1, 2]) is False   # staged key behind
+        assert lossless(pre, {1: pre[1]}, [1]) is True                      # checking only the active key would wrongly pass
+
+    @test("retry after a refused reservation: a unit returned by another request meanwhile is claimed instead of failing (CR-13 model, real reservations)")
+    def _():
+        import threading
+        reset_data(); register(1); set_R(1, L)                             # no further reservation is possible
+        lock = threading.Lock(); st = {"allowance": 0}
+        def acquire():
+            with lock:
+                if st["allowance"] >= 1:
+                    st["allowance"] -= 1; return True
+            if reserve(1, block=1) is not None:                            # refused: R is at the limit
+                with lock: st["allowance"] += 1
+            with lock:                                                     # one more synchronous check before giving up
+                if st["allowance"] >= 1:
+                    st["allowance"] -= 1; return True
+            return False
+        assert acquire() is False                                          # nothing anywhere
+        with lock: st["allowance"] += 1                                    # another request returns an unused, already reserved unit
+        assert acquire() is True and st["allowance"] == 0
 
     def tool(name, override):
         cand = override or (str(SB / name) if (SB / name).exists() else None)
