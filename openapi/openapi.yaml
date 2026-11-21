@@ -409,6 +409,10 @@ paths:
       tags: [Operations]
       operationId: getHealth
       summary: Liveness and readiness
+      description: |
+        Returns 200 when the process, the database and the key ring are usable. It deliberately exposes nothing about
+        key usage, thresholds or key state: those are available only on the admin listener. It returns 503 only when the
+        process cannot work at all.
       security: []
       responses:
         '200':

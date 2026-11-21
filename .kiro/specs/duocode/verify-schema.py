@@ -18,6 +18,8 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--server-bin", required=True)
 ap.add_argument("--psql", default="psql")
 ap.add_argument("--port", type=int, default=54343)
+ap.add_argument("--pg-dump", default=None, help="pg_dump of the SAME major version as the server (default: <server-bin>/pg_dump if present)")
+ap.add_argument("--pg-restore", default=None, help="pg_restore of the same major version (default: <server-bin>/pg_restore if present)")
 args = ap.parse_args()
 
 work = Path(tempfile.mkdtemp(prefix="dcv_", dir="/tmp"))
@@ -257,7 +259,8 @@ try:
     spec_text = (HERE / "database-schema.md").read_text()
     reserve_sql = next(b for b in blocks if "UPDATE key_usage" in b and "RETURNING reserved" in b)
     register_sql = next(b for b in blocks if "INSERT INTO key_usage (key_id) VALUES ($1)" in b)
-    seal_sql = re.search(r"`(UPDATE key_usage SET reserved = 1073741824 WHERE key_id = \$1;)`", spec_text).group(1)
+    seal_sql = re.search(r"`(UPDATE key_usage SET sealed = true, reserved = 1073741824 WHERE key_id = \$1;)`", spec_text).group(1)
+    check_sql = next(b for b in blocks if "SELECT NOT sealed AS usable FROM key_usage" in b)
     L = 2 ** 30
     BLOCK = 1024
 
@@ -272,6 +275,10 @@ try:
 
     def seal(k):
         sql(seal_sql.replace("$1", str(k)))
+
+    def usable(k):
+        """The pre-encryption check taken from the specification. No row (unregistered key) counts as unusable."""
+        return sql(check_sql.replace("$1", str(k))) == "t"
 
     def R(k=1):
         out = sql(f"SELECT coalesce(sum(reserved),0) FROM key_usage WHERE key_id={k};")
@@ -296,6 +303,12 @@ try:
                 raise Refused()
             self.allowance += self.block
             return total
+
+        def request(self):
+            """One encrypting request: the pre-encryption check first (spec statement), then the invocation."""
+            if not usable(self.key):
+                raise Refused()
+            self.encrypt()
 
         def encrypt(self):
             if self.allowance == 0:
@@ -531,12 +544,46 @@ try:
         sql("UPDATE key_usage SET reserved = 1;")
         assert sql(inv) == "f"
 
-    @test("sealing: the old key is refused for ever and sealing never lowers a counter")
+    @test("sealing: the old key is refused for ever, sealing never lowers a counter, is idempotent, and sealed forces the counter to 2^30")
     def _():
         reset_data(); register(1); assert reserve(1) == BLOCK
+        before = R()
         seal(1)
-        assert R() == L and reserve(1) is None
+        assert R() == L >= before and reserve(1) is None
         seal(1); assert R() == L
+        register(2)
+        sql("UPDATE key_usage SET sealed = true WHERE key_id = 2;", expect_error="key_usage_check")   # sealed without the counter at 2^30
+
+    @test("pre-encryption check: unsealed key usable, sealed key not usable, unregistered key not usable")
+    def _():
+        reset_data(); register(1)
+        assert usable(1) is True
+        assert usable(9) is False                      # no row
+        seal(1)
+        assert usable(1) is False
+
+    @test("rotation completed AFTER 2^28: a stale allowance cannot be used by any request that begins after the seal; unused units stay counted (RD-14, CR-10)")
+    def _():
+        reset_data(); register(1); set_R(1, 2 ** 28 + 5 * BLOCK)          # key already past the rotation threshold
+        A = Instance(key=1)
+        A.request()                                       # A reserves a block and holds 1023 unused units
+        assert A.allowance == BLOCK - 1 and reserve(1) is not None       # reservations were still granted past 2^28 (RD-14)
+        before_seal = R()
+        register(2); seal(1)                              # rotation completes: new key registered, old key sealed
+        assert R() == L and R() >= before_seal            # unused reservations stay counted, the counter never decreased
+        try:
+            A.request(); raise AssertionError("A encrypted under the sealed key although it still held an allowance")
+        except Refused:
+            pass
+        assert A.allowance == BLOCK - 1                   # the allowance is untouched but unusable
+        try:
+            A.reserve_block(); raise AssertionError("a reservation was granted under the sealed key")
+        except Refused:
+            pass
+        fresh = Instance(key=2)                           # a restarted instance with the new ring has no allowance and uses the new key
+        assert fresh.allowance == 0
+        fresh.request(); assert R(2) == BLOCK and R(1) == L
+        assert A.invocations <= before_seal               # every invocation under key 1 was covered by reserved units
 
     @test("restore hazard and recovery: restored counter is behind, sealing the old key and registering a new key stops it resuming (RD-13)")
     def _():
@@ -558,12 +605,53 @@ try:
         register(2); seal(1)
         ring_wrongly_active = Instance(key=1)
         try:
-            ring_wrongly_active.encrypt(); raise AssertionError("encryption resumed under the sealed key")
+            ring_wrongly_active.request(); raise AssertionError("encryption resumed under the sealed key")
         except Refused:
             pass
         new_inst = Instance(key=2)
         new_inst.encrypt()
         assert R(2) == BLOCK and R(1) == L
+
+
+    def tool(name, override):
+        cand = override or (str(SB / name) if (SB / name).exists() else None)
+        if not cand:
+            return None
+        v = run([cand, "--version"]).stdout
+        sv = sql("SHOW server_version_num;")[:2]
+        m = re.search(r"(\d+)(?:\.\d+)?", v)
+        return cand if m and m.group(1)[:2] == sv[:2] else None
+
+    dump_tool = tool("pg_dump", args.pg_dump)
+    restore_tool = tool("pg_restore", args.pg_restore)
+
+    if dump_tool and restore_tool:
+        @test("logical restore (pg_dump / pg_restore): counter rolls back, rate_limits excluded from the backup, new key and sealing stop the old key resuming (RD-13, CH-2)")
+        def _():
+            reset_data(); register(1); assert reserve(1) == BLOCK
+            sql(RL.format(cap=3, refill=0))                           # live rate-limit row, must NOT be in the backup
+            dumpfile = work / "dc.dump"
+            conn = ["-h", str(sock), "-p", str(PORT), "-U", "tester"]
+            r = run([dump_tool, "-Fc", "--exclude-table-data=rate_limits", "-f", str(dumpfile), *conn, "dc"]); assert r.returncode == 0, r.stderr
+            before_backup = R()
+            for _ in range(5): assert reserve(1) is not None           # reservations after the backup
+            pre_restore = R()
+            assert sql("SELECT count(*) FROM rate_limits;") == "1"
+            sql("DROP DATABASE dc;", db="postgres"); sql("CREATE DATABASE dc;", db="postgres")
+            r = run([restore_tool, "-d", "dc", *conn, str(dumpfile)]); assert r.returncode == 0, r.stderr
+            assert R() == before_backup < pre_restore                 # the restored counter is behind
+            assert sql("SELECT count(*) FROM rate_limits;") == "0"    # excluded from the backup (CH-2)
+            assert sql("SELECT count(*) FROM games;") == "0"
+            register(2); seal(1)                                      # the procedure
+            assert usable(1) is False and reserve(1) is None and R(1) == L
+            stale = Instance(key=1)
+            try:
+                stale.request(); raise AssertionError("encryption resumed under the sealed key after a logical restore")
+            except Refused:
+                pass
+            fresh = Instance(key=2); fresh.request(); assert R(2) == BLOCK
+    else:
+        results.append(("logical restore (pg_dump / pg_restore): SKIPPED, no pg_dump/pg_restore of the server's major version available", None, ""))
 
 finally:
     stop()
@@ -572,8 +660,12 @@ finally:
 width = max(len(n) for n, _, _ in results)
 failed = 0
 print(f"PostgreSQL {version}  (server-bin {SB})")
+skipped = 0
 for name, ok, detail in results:
+    if ok is None:
+        print("SKIP  " + name); skipped += 1; continue
     print(("PASS  " if ok else "FAIL  ") + name + ("" if ok else f"\n        {detail}"))
     failed += 0 if ok else 1
-print(f"\n{len(results) - failed} of {len(results)} tests passed on PostgreSQL {version}")
+ran = len(results) - skipped
+print(f"\n{ran - failed} of {ran} tests passed on PostgreSQL {version}" + (f" ({skipped} skipped)" if skipped else ""))
 sys.exit(1 if failed else 0)

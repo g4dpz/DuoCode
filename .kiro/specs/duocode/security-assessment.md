@@ -153,8 +153,8 @@ Rationale:
 
 | Threshold | Behaviour |
 |---|---|
-| 2^27 reserved units | Warning metric, one operational warning per key per process start, `/healthz` reports `warning`. Reservations continue |
-| 2^28 reserved units | The key is `ROTATION_OVERDUE`: critical alert, `/healthz` degraded (HTTP 200). Rotation is mandatory. **Reservations under the key continue to be granted until the hard stop** (RD-14, proposed), so a late rotation is not an outage. Rotating makes the old key `DECRYPT_ONLY` and seals it, after which no reservation under it is granted |
+| 2^27 reserved units | Warning metric, one operational warning per key per process start, admin health state `warning`. Reservations continue. The public `/healthz` is not affected |
+| 2^28 reserved units | The key is `ROTATION_OVERDUE`: critical alert, admin health state `degraded` (the public `/healthz` stays `ok`). Rotation is mandatory. **Reservations under the key continue to be granted until the hard stop** (RD-14, approved), so a late rotation is not an outage. Rotating makes the old key `DECRYPT_ONLY` and seals it, after which no reservation under it is granted |
 | 2^30 reserved units | Hard stop. A block that would take `R` above 2^30 is refused, so `R` never exceeds 2^30. `R` can equal 2^30 exactly. No further encryption occurs under the key once instances have consumed the units they already hold. Encrypting operations fail closed with `503`. Decryption is unaffected |
 
 **Limit of the mechanism, and the restore rule (RD-13).** The invariant holds for the live database. If the database is restored from an earlier backup, the `key_usage` row goes back in time too, and `R` may be lower than the encryptions really performed under the key after the backup. Ciphertexts from that period may survive elsewhere (the lost database, older backups, copies held by an attacker), so the nonce budget cannot be assumed unspent. The restore procedure therefore always: generates a new key and makes it the only `ACTIVE` key; **seals every older key** (sets its counter to 2^30, so any reservation under it is refused even if the ring were mistaken); and restarts all instances so every in-memory allowance is discarded. This happens before traffic is accepted, unless the restore is proved lossless (pre-restore counters not above restored counters). The previous key becomes `DECRYPT_ONLY`, stays in the ring so existing data decrypts, and never becomes `ACTIVE` again. The ring file lives outside the database and is not rolled back by a restore, so it keeps the new key and the old key's `DECRYPT_ONLY` status (`deployment.md` section 6.1).
@@ -228,10 +228,29 @@ Prohibited without exception: decrypted values in logs, diagnostics, metrics, tr
 
 **Rotation (planned, routine, for example annually or on staff change; mandatory at 2^28 encryptions).**
 1. Generate a new key. Add it to the ring as a new id. Back up the ring (new copy).
-2. Deploy the ring with the new key `ACTIVE` and the previous key `DECRYPT_ONLY` to every instance. New writes use the new key. Existing rows still decrypt because each row names its key. Once every instance runs the new ring, **seal the old key** (`deno task keys:seal <old id>`), so that no instance can reserve under it again.
+2. Register the new key (`key_usage` row, counter 0). Deploy the ring with the new key `ACTIVE` and the previous key `DECRYPT_ONLY` by **restarting every instance** (the ring is read only at process start, and allowances live in memory only, so no allowance survives the restart). New writes use the new key. Existing rows still decrypt because each row names its key. Confirm that every instance reports the new ring `generation` in the admin metric `duocode_key_ring_generation`. Then **seal the old key** (`deno task keys:seal <old id>`): `sealed = true`, counter set to 2^30. After this commits no instance can reserve under it, and no request that begins afterwards can encrypt under it even if some instance still held an allowance. Units reserved but never used stay counted against the old key. This is the same whether the rotation happens routinely or after the key passed 2^28 (section 3.6a).
 3. Run `deno task reencrypt` (R10.5), see 3.8. Record the completion date D.
 4. Verify no row references the old key with `keys:verify`.
 5. Retire the old key (3.9) no earlier than D + 35 days.
+
+### 3.6a Key lifecycle (single summary, RD-14, CR-10)
+
+| State of a key | Ring status | `key_usage` | Reservations | Encryption | Decryption |
+|---|---|---|---|---|---|
+| Registered, active, below 2^27 | `ACTIVE` | `sealed = false`, `R` below 2^27 | Granted | Yes | Yes |
+| Warning | `ACTIVE` | `R` at or above 2^27 | Granted, warning raised | Yes | Yes |
+| Rotation overdue | `ACTIVE` | `R` at or above 2^28 | Granted until 2^30, critical alert, admin health `degraded` | Yes | Yes |
+| Hard stop | `ACTIVE` | `R` = 2^30 | Refused (a block that would exceed 2^30) | Only with units already held, then `503` | Yes |
+| Superseded (after rotation, at any `R`, including after 2^28) | `DECRYPT_ONLY`, `deactivatedAt` set | `sealed = true`, `R` = 2^30 | Refused | **No.** Not for a request that begins after the seal commits, whatever allowance an instance holds | Yes |
+| Retired | removed from the ring | row kept or removed with the checklist of 3.9 | Refused | No | No (no data may remain under it) |
+
+Rules for the transition to *Superseded*, identical in `database-schema.md` 6.3, `deployment.md` 6.1 and 6.3:
+- The new key becomes the active key, and every instance is restarted so that the ring and the allowances are fresh.
+- The previous key becomes decrypt-only, and is sealed only after every instance runs the new ring.
+- Outstanding in-memory allowances for the previous key are not usable: restarted instances have none, and a missed instance fails the pre-encryption check as soon as the seal commits.
+- Unused reservations stay counted. Sealing never lowers a counter.
+- No instance resumes encryption under the previous key because it holds an allowance.
+- A superseded key never becomes active again.
 
 **Compromise response.** If a key may have leaked:
 1. Treat all data encrypted under it as exposed to whoever holds a copy of the database or backup made while the key existed.

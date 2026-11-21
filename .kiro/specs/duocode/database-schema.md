@@ -164,7 +164,9 @@ CREATE INDEX rate_limits_refilled_idx ON rate_limits (refilled_at);
 CREATE TABLE key_usage (                                  -- ONE authoritative row per key: encryption units RESERVED (RD-10, RD-13, CR-9)
   key_id    smallint PRIMARY KEY,
   reserved  bigint NOT NULL DEFAULT 0
-            CHECK (reserved >= 0 AND reserved <= 1073741824)   -- absolute backstop: 2^30. No statement can exceed it
+            CHECK (reserved >= 0 AND reserved <= 1073741824),  -- absolute backstop: 2^30. No statement can exceed it
+  sealed    boolean NOT NULL DEFAULT false,                     -- true once the key is no longer allowed to encrypt (rotation, restore)
+  CHECK (NOT sealed OR reserved = 1073741824)                   -- a sealed key is always at the limit
 );
 
 CREATE TABLE schema_migrations (
@@ -280,6 +282,7 @@ RETURNING tokens;
 | Reserved unit | One permitted encryption, counted in `key_usage.reserved` for a key. The counter `R` is the number of reserved units |
 | Encryption invocation | One actual call that encrypts a value with the key. Each invocation consumes exactly one reserved unit that the calling instance holds |
 | Allowance | The reserved units one instance holds in memory and has not yet consumed |
+| Sealed key | A key whose `sealed` flag is true and whose counter is at 2^30. No reservation is granted under it, and no encrypting request that begins after the seal commits may use it, even if the instance still holds an allowance |
 
 `R` counts every unit ever reserved: units consumed by invocations (whether or not the surrounding transaction committed), units still sitting in instance allowances, and units lost when an instance crashed or restarted. So `R >= invocations`. The counter may overestimate use. It can never underestimate it.
 
@@ -297,6 +300,7 @@ INSERT INTO key_usage (key_id) VALUES ($1) ON CONFLICT (key_id) DO NOTHING;
 UPDATE key_usage
 SET reserved = reserved + $2                          -- $2 = KEY_USAGE_BLOCK
 WHERE key_id = $1
+  AND NOT sealed
   AND reserved + $2 <= $3                             -- $3 = configured hard stop, at most 2^30, a multiple of $2
 RETURNING reserved;                                   -- the new total R
 ```
@@ -305,6 +309,14 @@ RETURNING reserved;                                   -- the new total R
 - The block is added to the instance's allowance only after the statement has returned. If the outcome is unknown (connection lost), the instance treats it as refused and does not use the block. The counter may have gone up. That is an over-count, which is safe.
 - A refusal is whole-block. There are no partial grants, because `$3` is a multiple of `$2` (validated at start-up, `design.md` section 13), so `R` can reach exactly `$3` and any further block is refused.
 - If the key row does not exist, the statement matches no row and is treated as a refusal. Registration creates it.
+
+**Pre-encryption check** (one cheap read, its own autocommit statement, before the request transaction begins, together with the allowance check, for every request that may encrypt):
+
+```sql
+SELECT NOT sealed AS usable FROM key_usage WHERE key_id = $1;
+```
+
+A request may encrypt under the key only if this returns `true` **and** the instance's allowance covers the request. No row (unregistered key) or `false` means the request fails closed with `503` before any state is read or written. This is what makes a stale in-memory allowance unusable once a key is sealed (section 6.3).
 
 **Why the hard stop is strict.** In PostgreSQL `READ COMMITTED`, an `UPDATE` takes a row lock. A second `UPDATE` of the same row waits for the first to commit, then re-evaluates its `WHERE` clause against the newly committed row before it changes anything. The comparison `reserved + $2 <= $3` is therefore always made against the latest total. Two instances cannot both be granted the last block. On top of that, the `CHECK (reserved <= 1073741824)` constraint makes any write above 2^30 fail even if an instance were misconfigured with a larger `$3`.
 
@@ -323,17 +335,19 @@ RETURNING reserved;                                   -- the new total R
 
 Consequence of G1 to G4: the number of encryption invocations under a key can never exceed 2^30, even though instances hold allowances and run concurrently, because every invocation needs a unit and at most 2^30 units exist.
 
+**Health reporting.** "Health state" in this section means the admin-only metric `duocode_health_state{component="key_usage",key_id}` (`ok`, `warning`, `degraded`, `critical`) and the alerts built on it (`deployment.md` section 7). The public `/healthz` deliberately does not expose key usage, so key information is never public. It returns `503` only when the process cannot work at all (database or key ring unavailable).
+
 **Threshold behaviour** (thresholds apply to `R`, the reserved units, after each granted reservation):
 
 | Threshold | `R` reaches | Behaviour |
 |---|---|---|
-| Warning | 2^27 (134,217,728) | The warning metric `duocode_key_usage_state{key_id}` becomes `WARNING`, one operational warning is logged per key per process start, and `/healthz` stays ready but reports `keyUsage: warning`. Reservations continue normally |
-| Rotation required | 2^28 (268,435,456) | State `ROTATION_OVERDUE`: a critical alert is raised, `/healthz` reports degraded (still HTTP 200 so the service is not taken out of rotation), and the key must be rotated. **Reservations under this key continue to be granted until the hard stop** (RD-14, proposed). This keeps the game available while the owners rotate, and the cryptographic margin remains large (collision probability about 2^-41 at 2^28, 2^-37 at 2^30). A rotation makes the old key `DECRYPT_ONLY` and seals it, which refuses all further reservations under it |
-| Hard stop | 2^30 (1,073,741,824) | `R + block` would exceed the limit, so the statement returns no row. No further units exist. After each instance consumes the units it already holds, no further encryption occurs under the key. Operations that need to encrypt fail closed with `503`. Decryption of existing data is unaffected. `/healthz` reports not ready for writes until a new key is active |
+| Warning | 2^27 (134,217,728) | The warning metric `duocode_key_usage_state{key_id}` becomes `WARNING`, one operational warning is logged per key per process start, and the admin health state for the key is `warning`. Reservations continue normally. The public `/healthz` is not affected |
+| Rotation required | 2^28 (268,435,456) | State `ROTATION_OVERDUE`: a critical alert is raised, the admin health state for the key is `degraded`, and the key must be rotated. The public `/healthz` stays `ok` so the service is not taken out of rotation. **Reservations under this key continue to be granted until the hard stop** (RD-14, approved). This keeps the game available while the owners rotate, and the cryptographic margin remains large (collision probability about 2^-41 at 2^28, 2^-37 at 2^30). A rotation makes the old key `DECRYPT_ONLY` and seals it, which refuses all further reservations under it |
+| Hard stop | 2^30 (1,073,741,824) | `R + block` would exceed the limit, so the statement returns no row. No further units exist. After each instance consumes the units it already holds, no further encryption occurs under the key. Operations that need to encrypt fail closed with `503`. Decryption of existing data is unaffected. A critical alert is raised, the admin health state is `critical`, and a new key must be activated. The public `/healthz` stays `ok` so reads and decryption keep working |
 
 `R` can equal 2^30 exactly: the limit is inclusive of the last unit, so at most 2^30 encryptions ever happen under a key. A block that would take `R` above 2^30 is refused whole. If the owners want a stop strictly before 2^30, set `KEY_USAGE_HARD_STOP` lower. The statement and the proof do not change.
 
-**Sealing a key** (`deno task keys:seal <key_id>`): `UPDATE key_usage SET reserved = 1073741824 WHERE key_id = $1;`. After this, every reservation under the key is refused, whatever the ring says. Sealing is used (a) at every planned rotation, after all instances run the new ring, and (b) at every restore, immediately (`deployment.md` section 6.1). Units already held in allowances stay valid, because they were counted before, and only matter for the instances that still run. Sealing never decreases a counter.
+**Sealing a key** (`deno task keys:seal <key_id>`): `UPDATE key_usage SET sealed = true, reserved = 1073741824 WHERE key_id = $1;`. After this commits, every reservation under the key is refused, and every encrypting request that begins afterwards fails the pre-encryption check, whatever the ring says and whatever allowance an instance still holds. Sealing is used (a) at every planned rotation, after every instance has restarted with the new ring, and (b) at every restore, immediately (`deployment.md` section 6.1). Units that were reserved but never used stay counted: sealing raises the counter to the limit and never lowers it, so `R` still covers every encryption that was performed. Sealing is idempotent. The `CHECK` forces a sealed row to sit at 2^30.
 
 **Restore (G7).** A restore from backup rolls `key_usage` back in time, so `R` may be lower than the encryptions really performed after the backup. The restore procedure therefore (1) activates a new key in the ring as the only `ACTIVE` key, (2) seals every older key, which burns its restored counter up to the limit so that even a mistaken ring cannot make it reserve again, and (3) restarts all instances, which discards every in-memory allowance. Old keys stay in the ring for decryption only (`security-assessment.md` section 3.6).
 
@@ -343,6 +357,24 @@ Consequence of G1 to G4: the number of encryption invocations under a key can ne
 - Contention: one statement per `KEY_USAGE_BLOCK` (1024) encryptions per instance. Negligible.
 - `keys:verify` checks the invariant `ciphertext rows under the key <= R` per key and fails if it is violated.
 - The statement runs on a separate connection from the request transaction, before it begins. It holds the key row lock for one statement and never while waiting for any other lock (`design.md` section 8.2).
+
+### 6.3 Key lifecycle: rotation completed at or after a threshold, and stale allowances (RD-14, CR-10)
+
+This section is the single description of what happens to a key's allowances when the key stops being the active key. `security-assessment.md` section 3.6 and `deployment.md` sections 6 and 6.3 refer to it.
+
+**Rotation completed after the 2^28 threshold** (or at any other time, the rule is the same):
+
+1. **The new key becomes the active encryption key.** It is registered (`key_usage` row, counter 0) and set as the only `ACTIVE` key in the ring. Every instance is restarted with the new ring. The ring is read only when a process starts, and the active key cannot change while a process runs, so no allowance is ever carried across a ring change.
+2. **The previous key becomes decrypt-only.** Its ring entry is `DECRYPT_ONLY` with `deactivatedAt` set. Decryption of existing data continues.
+3. **The previous key is sealed** once every instance runs the new ring.
+4. **Outstanding in-memory allowances for the previous key are no longer usable.** Two independent mechanisms: (a) an instance restarted with the new ring has no allowance at all, because allowances live in memory only; (b) an instance that somehow still runs the old ring fails the pre-encryption check as soon as the seal commits, so no request that begins after the seal can encrypt under the previous key. A request already in flight when the seal commits may finish its encryptions, because those units were reserved and counted. The exposure is at most one request.
+5. **Unused reservations stay counted** against the previous key. Sealing sets the counter to 2^30 and never lowers it, and the units that were reserved but not used remain inside the total. The counter therefore overestimates the previous key's use, and never underestimates it.
+6. **No instance may resume encryption under the previous key merely because it holds an allowance.** An allowance is permission to use units that were already counted. It is not permission to use the key. The key must also be the instance's active key (ring) and unsealed (database) when each request begins.
+7. A key that has been `DECRYPT_ONLY` never becomes `ACTIVE` again.
+
+**Why this order.** Sealing before every instance has the new ring would make instances that still hold the old ring fail with `503` until restarted. Restarting everything first, then sealing, keeps the service available. If an instance was missed, sealing turns the mistake into an immediate and visible failure rather than a silent continued use of the old key.
+
+**Restore** follows the same rules with one difference: the counter may be wrong (too low), so the previous key is sealed immediately, which also repairs the counter by raising it to the limit.
 
 ## 7. Cleanup
 
