@@ -298,16 +298,19 @@ INSERT INTO key_usage (key_id) VALUES ($1) ON CONFLICT (key_id) DO NOTHING;
 
 ```sql
 UPDATE key_usage
-SET reserved = reserved + $2                          -- $2 = KEY_USAGE_BLOCK
+SET reserved = reserved + $2                          -- $2 = n x KEY_USAGE_BLOCK, n >= 1 whole blocks
 WHERE key_id = $1
   AND NOT sealed
+  AND $2 > 0                                          -- a zero or negative request matches no row, so the counter can never go down
   AND reserved + $2 <= $3                             -- $3 = configured hard stop, at most 2^30, a multiple of $2
 RETURNING reserved;                                   -- the new total R
 ```
 
-- One returned row means the block of `$2` units was granted, and the row holds the new total. No returned row means the block was refused and nothing changed.
-- The block is added to the instance's allowance only after the statement has returned. If the outcome is unknown (connection lost), the instance treats it as refused and does not use the block. The counter may have gone up. That is an over-count, which is safe.
-- A refusal is whole-block. There are no partial grants, because `$3` is a multiple of `$2` (validated at start-up, `design.md` section 13), so `R` can reach exactly `$3` and any further block is refused.
+- One returned row means the `$2` units were granted, and the row holds the new total. No returned row means the request was refused and nothing changed.
+- The units are added to the instance's allowance only after the statement has returned. If the outcome is unknown (connection lost), the instance treats it as refused and does not use them. The counter may have gone up. That is an over-count, which is safe.
+- A refusal is whole: there are no partial grants. `$2` is always a whole number of blocks and `$3` is a multiple of the block (validated at start-up, `design.md` section 13), so `R` can reach exactly `$3` and any further request is refused.
+- **Positive blocks only.** The `$2 > 0` guard in the statement and the start-up validation (`KEY_USAGE_BLOCK` at least 1) mean that no statement can lower `reserved`. A request for zero or a negative number matches no row.
+- **Enough units for the whole operation.** An operation that needs `m` units while the instance holds `a` receives `n = ceil((m - a) / block)` whole blocks in one statement, so a small block size can never leave an operation short while capacity remains.
 - If the key row does not exist, the statement matches no row and is treated as a refusal. Registration creates it.
 
 **Pre-encryption check** (one cheap read, its own autocommit statement, before the request transaction begins, together with the allowance check, for every request that may encrypt):
@@ -316,7 +319,7 @@ RETURNING reserved;                                   -- the new total R
 SELECT NOT sealed AS usable FROM key_usage WHERE key_id = $1;
 ```
 
-A request may encrypt under the key only if this returns `true` **and** the instance's allowance covers the request. No row (unregistered key) or `false` means the request fails closed with `503` before any state is read or written. This is what makes a stale in-memory allowance unusable once a key is sealed (section 6.3).
+A request may encrypt under the key only if this returns `true` **and** it holds enough claimed units (`design.md` section 9.1). No row (unregistered key) or `false` means the key is unusable. The request is not rejected at once, because it may not need an encryption at all (an idempotent replay or conflict, or a rule rejection). It continues through authorisation, replay lookup and rule checks, and ends with `503` only at the point where a fresh encryption is needed, before anything has been written. This is also what makes a stale in-memory allowance unusable once a key is sealed (section 6.3).
 
 **Why the hard stop is strict.** In PostgreSQL `READ COMMITTED`, an `UPDATE` takes a row lock. A second `UPDATE` of the same row waits for the first to commit, then re-evaluates its `WHERE` clause against the newly committed row before it changes anything. The comparison `reserved + $2 <= $3` is therefore always made against the latest total. Two instances cannot both be granted the last block. On top of that, the `CHECK (reserved <= 1073741824)` constraint makes any write above 2^30 fail even if an instance were misconfigured with a larger `$3`.
 
@@ -347,7 +350,7 @@ Consequence of G1 to G4: the number of encryption invocations under a key can ne
 
 `R` can equal 2^30 exactly: the limit is inclusive of the last unit, so at most 2^30 encryptions ever happen under a key. A block that would take `R` above 2^30 is refused whole. If the owners want a stop strictly before 2^30, set `KEY_USAGE_HARD_STOP` lower. The statement and the proof do not change.
 
-**Sealing a key** (`deno task keys:seal <key_id>`): `UPDATE key_usage SET sealed = true, reserved = 1073741824 WHERE key_id = $1;`. After this commits, every reservation under the key is refused, and every encrypting request that begins afterwards fails the pre-encryption check, whatever the ring says and whatever allowance an instance still holds. Sealing is used (a) at every planned rotation, after every instance has restarted with the new ring, and (b) at every restore, immediately (`deployment.md` section 6.1). Units that were reserved but never used stay counted: sealing raises the counter to the limit and never lowers it, so `R` still covers every encryption that was performed. Sealing is idempotent. The `CHECK` forces a sealed row to sit at 2^30.
+**Sealing a key** (`deno task keys:seal <key_id>`): `INSERT INTO key_usage (key_id, reserved, sealed) VALUES ($1, 1073741824, true) ON CONFLICT (key_id) DO UPDATE SET reserved = 1073741824, sealed = true;`. The statement inserts a sealed row when none exists, so a key whose row is missing (for example a key registered after the backup that a restore went back past) is sealed too, and a later registration (`ON CONFLICT DO NOTHING`) cannot reset it. After this commits, every reservation under the key is refused, and every encrypting request that begins afterwards fails the pre-encryption check, whatever the ring says and whatever allowance an instance still holds. Sealing is used (a) at every planned rotation, after every instance has restarted with the new ring, and (b) at every restore, immediately, for **every key id in the newest ring** (`deployment.md` section 6.1). Units that were reserved but never used stay counted: sealing raises the counter to the limit and never lowers it, so `R` still covers every encryption that was performed. Sealing is idempotent. The `CHECK` forces a sealed row to sit at 2^30.
 
 **Restore (G7).** A restore from backup rolls `key_usage` back in time, so `R` may be lower than the encryptions really performed after the backup. The restore procedure therefore (1) activates a new key in the ring as the only `ACTIVE` key, (2) seals every older key, which burns its restored counter up to the limit so that even a mistaken ring cannot make it reserve again, and (3) restarts all instances, which discards every in-memory allowance. Old keys stay in the ring for decryption only (`security-assessment.md` section 3.6).
 

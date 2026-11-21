@@ -259,7 +259,7 @@ try:
     spec_text = (HERE / "database-schema.md").read_text()
     reserve_sql = next(b for b in blocks if "UPDATE key_usage" in b and "RETURNING reserved" in b)
     register_sql = next(b for b in blocks if "INSERT INTO key_usage (key_id) VALUES ($1)" in b)
-    seal_sql = re.search(r"`(UPDATE key_usage SET sealed = true, reserved = 1073741824 WHERE key_id = \$1;)`", spec_text).group(1)
+    seal_sql = re.search(r"`(INSERT INTO key_usage \(key_id, reserved, sealed\) VALUES \(\$1, 1073741824, true\) ON CONFLICT \(key_id\) DO UPDATE SET reserved = 1073741824, sealed = true;)`", spec_text).group(1)
     check_sql = next(b for b in blocks if "SELECT NOT sealed AS usable FROM key_usage" in b)
     L = 2 ** 30
     BLOCK = 1024
@@ -368,8 +368,11 @@ try:
 
             with ThreadPoolExecutor(workers + 1) as ex:
                 sf = ex.submit(sampler)
-                counts = list(ex.map(instance, range(workers)))
-                stop["v"] = True; sf.result()
+                try:
+                    counts = list(ex.map(instance, range(workers)))
+                finally:
+                    stop["v"] = True              # a failing worker must never leave the sampler running (CR-11)
+                sf.result()
             assert sum(counts) == available, (workers, sum(counts), available)
             assert R() == L, R()
             assert seen_max["v"] <= L, seen_max
@@ -407,12 +410,17 @@ try:
     def _():
         reset_data(); set_R(1, L - BLOCK)
         A = session("BEGIN;\n" + reserve_sql.replace("$1", "1").replace("$2", str(BLOCK)).replace("$3", str(L)))   # A holds the row lock, uncommitted
-        with ThreadPoolExecutor(1) as ex:
-            fut = ex.submit(reserve, 1)                                         # B blocks on the row lock
-            time.sleep(1.0)
-            assert not fut.done(), "B did not wait for A: the reservations are not serialised"
-            finish(A, "COMMIT;")
-            assert fut.result(timeout=30) is None                               # B re-evaluated against the committed total and was refused
+        try:
+            with ThreadPoolExecutor(1) as ex:
+                fut = ex.submit(reserve, 1)                                     # B blocks on the row lock
+                time.sleep(1.0)
+                waited = not fut.done()
+                finish(A, "COMMIT;"); A = None                                  # always release A, even if the assertion below fails (CR-11)
+                assert fut.result(timeout=30) is None                           # B re-evaluated against the committed total and was refused
+                assert waited, "B did not wait for A: the reservations are not serialised"
+        finally:
+            if A is not None:
+                finish(A, "ROLLBACK;")
         assert R() == L
 
     @test("outstanding allowance: A holds a block, B takes the last block, C is refused, nobody exceeds the units reserved")
@@ -507,11 +515,12 @@ try:
     @test("start-up validation rule: hard stop <= 2^30, multiple of the block, WARN <= ROTATE <= HARD")
     def _():
         def valid(warn, rot, hard, block):
-            return warn <= rot <= hard <= L and hard % block == 0 and block <= 2 ** 20 and L % block == 0
+            return warn <= rot <= hard <= L and block >= 1 and hard % block == 0 and block <= 2 ** 20 and L % block == 0
         assert valid(2 ** 27, 2 ** 28, L, 1024)
         assert not valid(2 ** 27, 2 ** 28, L + 1024, 1024)
         assert not valid(2 ** 27, 2 ** 28, L - 1, 1024)
         assert not valid(2 ** 29, 2 ** 28, L, 1024)
+        assert not valid(2 ** 27, 2 ** 28, L, 0) and not valid(2 ** 27, 2 ** 28, L, -1024)
 
     @test("policy model: R is never below actual encryptions under random interleavings, rollbacks and crashes")
     def _():
@@ -543,6 +552,51 @@ try:
         assert sql(inv) == "t"
         sql("UPDATE key_usage SET reserved = 1;")
         assert sql(inv) == "f"
+
+    @test("zero and negative reservations match no row and change nothing; no statement can lower the counter (CR-11)")
+    def _():
+        reset_data(); register(1); set_R(1, BLOCK)
+        for units in (0, -1, -BLOCK, -10 * BLOCK):
+            assert reserve(1, block=units) is None and R() == BLOCK, units
+
+    @test("whole blocks sized to the operation: a block of 1 still gets 22 units in one statement; no partial grant near the limit (CR-11)")
+    def _():
+        reset_data(); register(1)
+        assert reserve(1, block=22) == 22 and R() == 22
+        set_R(1, L - 10)
+        assert reserve(1, block=22) is None and R() == L - 10           # refused whole, nothing changes
+        assert reserve(1, block=10) == L                                # the exact remainder fits
+
+    @test("sealing a key whose row is missing inserts a sealed row; a later registration cannot reset it (CR-11)")
+    def _():
+        reset_data()
+        assert sql("SELECT count(*) FROM key_usage WHERE key_id = 7;") == "0"
+        seal(7)
+        assert R(7) == L and usable(7) is False and reserve(7) is None
+        register(7)                                                     # ON CONFLICT DO NOTHING: stays sealed
+        assert R(7) == L and usable(7) is False and reserve(7) is None
+
+    @test("atomic claims: with one unit left and 16 racing requests on one instance exactly one claims it, the rest defer (CR-11 model, real reservation)")
+    def _():
+        import threading
+        reset_data(); register(1)
+        lock = threading.Lock()                  # models the single-threaded synchronous claim step of one process
+        allowance = {"v": 1}
+        claimed, deferred, consumed = [], [], []
+        def request(i):
+            with lock:
+                if allowance["v"] >= 1:
+                    allowance["v"] -= 1; claimed.append(i); got = True
+                else:
+                    deferred.append(i); got = False
+            if got:
+                consumed.append(i)               # the claimed unit is used by exactly this request
+        with ThreadPoolExecutor(16) as ex:
+            list(ex.map(request, range(16)))
+        assert len(claimed) == 1 and len(deferred) == 15 and len(consumed) == 1 and allowance["v"] == 0
+        with lock:                               # an operation that ends without encrypting returns its claim
+            allowance["v"] += 1
+        assert allowance["v"] == 1
 
     @test("sealing: the old key is refused for ever, sealing never lowers a counter, is idempotent, and sealed forces the counter to 2^30")
     def _():
@@ -612,6 +666,22 @@ try:
         new_inst.encrypt()
         assert R(2) == BLOCK and R(1) == L
 
+
+    @test("restore that goes back past a key's registration: the newest ring still lets us seal that key, and the next identifier is above highestKeyId (CR-11)")
+    def _():
+        reset_data(); register(1); assert reserve(1) == BLOCK
+        stop(); backup = work / "backup2"
+        shutil.copytree(data, backup); start()
+        register(2); assert reserve(2) == BLOCK                       # key 2 registered and used AFTER the backup
+        ring_newest = {"generation": 9, "highestKeyId": 2, "keys": {"1": "DECRYPT_ONLY", "2": "ACTIVE"}}
+        stop(); shutil.rmtree(data); shutil.copytree(backup, data); start()   # restore
+        assert sql("SELECT count(*) FROM key_usage WHERE key_id = 2;") == "0"  # key 2 has no row in the restored database
+        for kid in map(int, ring_newest["keys"]):                    # procedure: seal EVERY id of the newest ring
+            seal(kid)
+        assert usable(2) is False and reserve(2) is None and usable(1) is False
+        new_id = ring_newest["highestKeyId"] + 1                      # a new key never reuses an identifier
+        assert new_id == 3
+        register(new_id); assert usable(new_id) is True and reserve(new_id) == BLOCK
 
     def tool(name, override):
         cand = override or (str(SB / name) if (SB / name).exists() else None)

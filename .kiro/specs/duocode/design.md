@@ -189,7 +189,7 @@ Every authenticated state-changing use case has this fixed shape:
 
 1. Validate the request (body, path, headers, nickname, idempotency key format). No database work.
 2. Preliminary credential lookup (non-authoritative, section 5.1 step 1).
-3. Rate-limit updates, each in its own short autocommit transaction (section 11). Then make sure the instance holds enough reserved encryptions for the operation (section 9.1). Both happen before `BEGIN`, and both fail closed with `503`.
+3. Rate-limit updates, each in its own short autocommit transaction (section 11). Then, for an operation that may encrypt, the pre-encryption check, any needed reservation, and the claim of units (section 9.1). All of this happens before `BEGIN`. A rate-limit failure fails the request closed with `503`. A failure to obtain units is deferred to the point a fresh encryption is needed (section 9.1), still before anything is written.
 4. `BEGIN` at `READ COMMITTED`. Set `lock_timeout` (default 5 s) and `statement_timeout` (default 10 s) for the transaction.
 5. `SELECT … FROM games WHERE id = $1 FOR UPDATE` on the game addressed by the request.
 6. `authorise` (section 5.1 step 3).
@@ -228,7 +228,7 @@ Order of checks inside the transaction:
 
 1. Lock game, `authorise`.
 2. Look up `(player_id, key)` in `idempotency_keys`. If found, recompute the fingerprint for this request with the record's `fingerprint_key_id` and compare in constant time. Equal: return the stored response and stop. Different: `IDEMPOTENCY_CONFLICT`. (R5.3 to R5.5, R5.9)
-3. Check game is `ACTIVE`, player not solved, `guesses_used < 10`.
+3. Check game is `ACTIVE`, player not solved, `guesses_used < 10`. Then check that the operation holds its claimed encryption unit (section 9.1). If it does not, end with `503` and `Retry-After`. Nothing has been written yet.
 4. Decrypt the opponent's code inside the vault callback, compute feedback, encrypt the guess, insert it with `guess_number = guesses_used + 1`, update the player, insert the idempotency record with the response body (feedback and counts only, never the guess or the code), update `expires_at`.
 5. If both players are finished, compute the outcome, insert the result, set `COMPLETED` and the completed-game `expires_at`.
 6. Commit and return `201`.
@@ -262,18 +262,26 @@ A `SecretCodeVault` in the persistence layer owns encryption. Cryptographic deta
 - Request fingerprints for guesses are keyed HMACs from the vault (`vault.fingerprint`), not plain hashes (RD-8, R5.12).
 - The vault enforces the encryption reservation rule of section 9.1.
 
-### 9.1 Encryption usage reservation (RD-10, RD-13, CR-9, R10.10)
+### 9.1 Encryption usage reservation (RD-10, RD-13, RD-14, CR-9, CR-10, CR-11, R10.10)
 
-The full specification, with the statement, the guarantees G1 to G8 and the threshold table, is in `database-schema.md` section 6.2. The architecture:
+The full specification, with the statements, the guarantees G1 to G8 and the threshold table, is in `database-schema.md` section 6.2, and the lifecycle after rotation is in section 6.3. The architecture:
 
-- **Terms.** A *reserved unit* is one permitted encryption counted in the key's counter `R`. An *encryption invocation* is one actual encryption, and consumes one reserved unit. An *allowance* is the reserved units an instance holds in memory, unconsumed. Allowances are part of `R`.
+- **Terms.** A *reserved unit* is one permitted encryption counted in the key's counter `R`. An *encryption invocation* is one actual encryption, and consumes one reserved unit. An *allowance* is the reserved units an instance holds in memory, unconsumed. A *claim* is the part of the allowance set aside for one operation. Allowances are part of `R`.
 - **One authoritative row per key.** Every instance reserves through one atomic conditional `UPDATE` on that row, so reservations under a key are serialised by the database and the limit check cannot be passed by two instances at once. The old 32 shards are replaced.
-- **Before the transaction.** Each operation declares its largest number of encryptions (guess submission 1, code submission 1, rotation 1, mint 0, results and progress 0, re-encryption of one game at most 22 plus rotation ciphertexts). Before `BEGIN` the vault checks that the allowance for the active key covers it. If not it reserves one block (`KEY_USAGE_BLOCK`) in a separate autocommit transaction. A refusal or failure ends the request with `503` before any state is read or written.
-- **At the invocation.** `vault.consume(keyId)` decrements the allowance and throws if it is zero. Every encryption goes through it, whether or not the surrounding transaction later commits. There is no code path that encrypts without consuming a unit.
-- **Thresholds.** Decided from the returned total `R`: warning at 2^27 (metric, log, admin health `warning`), rotation overdue at 2^28 (critical alert, admin health `degraded`, reservations continue, RD-14 approved), hard stop at 2^30 (reservations refused, new encryption fails closed). The key must be rotated before it reaches the hard stop.
-- **Pre-encryption check.** Besides the allowance, every request that may encrypt first runs `SELECT NOT sealed FROM key_usage WHERE key_id = $1` (one read, autocommit, before `BEGIN`). A sealed or unregistered key fails the request closed with `503`. An instance that still holds an allowance for a sealed key therefore cannot use it for any request that begins after the seal commits (CR-10).
+- **Claim before the transaction (atomic, same instance).** Each operation declares its largest number of encryptions `m` (guess submission 1, code submission 1, rotation 1, mint 0, results and progress 0, re-encryption of one game at most 22 plus rotation ciphertexts). Before `BEGIN` the vault does these steps:
+  1. Run the pre-encryption check (`SELECT NOT sealed ...`).
+  2. If the allowance is below `m`, reserve `n = ceil((m - allowance) / block)` whole blocks in one statement, so any block size covers any operation.
+  3. **Claim** `m` units: decrement the allowance by `m` in one synchronous step and hand the operation a claim of `m`. The runtime is single-threaded per process, so two concurrent requests cannot claim the same unit, and a request cannot start a transaction that is already known to lack units.
+  4. After the operation ends, units it did not use are **returned** to the allowance. Units it used stay consumed. If the process crashes, claimed units are lost but stay counted.
+- **Deferred refusal.** If the pre-encryption check fails or the reservation is refused, the operation does **not** fail yet, because it may need no encryption: an idempotent replay (including a rotation replay, which decrypts and does not encrypt), a conflict, or a rule rejection. It runs with an empty claim through validation, authorisation, replay lookup and rule checks. If it then reaches the point where a fresh encryption is needed, it ends with `503` and `Retry-After`, having written nothing. No reservation or counter statement is ever issued inside the request transaction.
+- **At the invocation.** `vault.consume(claim)` decrements the claim and throws if it is zero. Every encryption goes through it, whether or not the surrounding transaction later commits. There is no code path that encrypts without consuming a claimed unit.
+- **Thresholds.** Decided from the returned total `R`: warning at 2^27 (metric, log, admin health `warning`), rotation overdue at 2^28 (critical alert, admin health `degraded`, reservations continue, RD-14 approved), hard stop at 2^30 inclusive (a request that would take `R` above 2^30 is refused, new encryption fails closed). The key must be rotated before it reaches the hard stop.
+- **Refreshing state from the authoritative row.** Each instance reads its keys' `key_usage` rows at start-up and then every `KEY_USAGE_REFRESH_SECONDS` (default 30), with a plain read that reserves nothing, and updates its metrics and admin health state from it. So an instance that holds an allowance and makes no reservation still reports a threshold that another instance crossed.
+- **Start-up never needs budget.** The ring self-test decrypts a known-answer vector that `keys:generate` encrypted once when the key was created (that one encryption is reserved and counted at that time). It does not encrypt. An instance can therefore start with an exhausted or sealed active key, serve reads and decryption, and answer every encrypting request with `503`.
+- **Pre-encryption check.** A sealed or unregistered key is unusable. An instance that still holds an allowance for a sealed key cannot use it for any request that begins after the seal commits (CR-10).
 - **Ring and allowances.** The key ring is read only when a process starts, and the active key cannot change while a process runs. Allowances live in memory only, so a restart or a rotation never carries an allowance across. A rotation completed at any time, including after the 2^28 threshold, follows `database-schema.md` section 6.3: new key active, previous key decrypt-only and sealed, unused reservations stay counted, no instance resumes encryption under the previous key because of an allowance.
-- **Rotation and restore seal the old key** (`keys:seal`), which sets `sealed = true` and the counter to the limit so every later reservation under it is refused, whatever the ring says. After a restore a new key is activated before traffic and all instances restart, which discards allowances (R10.13, `deployment.md` section 6.1). A key that has been `DECRYPT_ONLY` never becomes `ACTIVE` again.
+- **Ring validation.** The ring loader rejects a ring in which two key ids share the same key material, and rejects an id that is not above `highestKeyId` when adding a key, so key identifiers and key material are never reused (R10.4).
+- **Rotation and restore seal the old key** (`keys:seal`): it inserts or updates the row to `sealed = true` and the counter to the limit, so every later reservation under it is refused, whatever the ring says, even for a key whose row was missing from a restored database. After a restore a new key is activated before traffic and all instances restart (R10.13, `deployment.md` section 6.1). A key that has been `DECRYPT_ONLY` never becomes `ACTIVE` again.
 - **Metrics:** `duocode_key_usage_reserved{key_id}`, `duocode_key_usage_state{key_id}`, `duocode_key_usage_refusals_total{key_id}`, `duocode_key_allowance{key_id}` (per instance), `duocode_key_ring_generation` (per instance), `duocode_health_state{component,key_id}`. Labels are bounded (key ids).
 
 ## 10. Request canonicalisation and fingerprints (CL-6)
@@ -338,14 +346,15 @@ All keys are read at start-up, validated, and failure is fatal. Defaults are the
 | `KEY_USAGE_WARN` | `134217728` (2^27) | Warn when a key's reserved total reaches this (approved, RD-10) |
 | `KEY_USAGE_ROTATE_BY` | `268435456` (2^28) | Rotation required by this count (approved, RD-10) |
 | `KEY_USAGE_HARD_STOP` | `1073741824` (2^30) | Hard stop on reserved units. Must be at most 2^30 and a multiple of `KEY_USAGE_BLOCK`. A stricter (lower) value is allowed. The database also enforces 2^30 absolutely (approved, RD-10) |
-| `KEY_USAGE_BLOCK` | `1024` | Units per reservation. Must divide `KEY_USAGE_HARD_STOP` and be at most 2^20 (RD-13) |
+| `KEY_USAGE_BLOCK` | `1024` | Units in one block. Must be at least 1, divide `KEY_USAGE_HARD_STOP`, and be at most 2^20 (RD-13). Reservations are whole numbers of blocks |
+| `KEY_USAGE_REFRESH_SECONDS` | `30` | How often an instance re-reads the authoritative `key_usage` rows for metrics and health (CR-11) |
 | `RATE_LIMITS` | see `deployment.md` section 4 | Capacity and refill per scope |
 | `DB_LOCK_TIMEOUT_MS` | `5000` | Transaction lock timeout |
 | `DB_STATEMENT_TIMEOUT_MS` | `10000` | Statement timeout |
 | `LOG_LEVEL` | `info` | Logging |
 | `HTTP_MAX_BODY_BYTES` | `1024` | Body size limit |
 
-Validation: TTLs, replay window, batch size and rate-limit values must be positive. `KEY_USAGE_WARN <= KEY_USAGE_ROTATE_BY <= KEY_USAGE_HARD_STOP <= 2^30`, and `KEY_USAGE_HARD_STOP` must be a multiple of `KEY_USAGE_BLOCK`. Any violation stops start-up. `BACKUP_RETENTION_DAYS` must be positive. Development and production use separate environment files. Only `.env.example` is committed.
+Validation: TTLs, replay window, batch size and rate-limit values must be positive. `KEY_USAGE_WARN <= KEY_USAGE_ROTATE_BY <= KEY_USAGE_HARD_STOP <= 2^30`, and `KEY_USAGE_BLOCK` must be at least 1, and `KEY_USAGE_HARD_STOP` must be a multiple of it. Any violation stops start-up. `BACKUP_RETENTION_DAYS` must be positive. Development and production use separate environment files. Only `.env.example` is committed.
 
 ## 14. Observability (R13.8, R13.9)
 

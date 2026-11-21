@@ -135,9 +135,9 @@ Rationale:
 
 **Mechanism (RD-13 and CR-9): durable reservations against one authoritative counter, with a strict hard stop.** The full specification is `database-schema.md` section 6.2. In brief:
 
-1. One row per key holds `R`. A single atomic statement grants a block only if `R + block <= hard stop`: `UPDATE key_usage SET reserved = reserved + block WHERE key_id = k AND reserved + block <= hard_stop RETURNING reserved`. No row returned means refused, with no change.
+1. One row per key holds `R`. A single atomic statement grants a positive whole number of blocks only if `R + units <= hard stop`: `UPDATE key_usage SET reserved = reserved + units WHERE key_id = k AND NOT sealed AND units > 0 AND reserved + units <= hard_stop RETURNING reserved`. No row returned means refused, with no change. A zero or negative request matches no row, so the counter can never go down, and an operation that needs many units gets as many whole blocks as it needs in one statement.
 2. The statement runs in its own autocommit transaction on a separate connection, before the request transaction. A reservation is therefore never rolled back with an application transaction.
-3. An instance adds the block to its in-memory allowance only after the statement returns. Each encryption invocation consumes one unit and the vault refuses to encrypt with an empty allowance.
+3. An instance adds the units to its in-memory allowance only after the statement returns. Before an operation's transaction it atomically **claims** the units it may need from the allowance, and returns what it did not use. Each encryption invocation consumes one claimed unit, and the vault refuses to encrypt with none. If no units can be obtained, the operation is not rejected at once: it still answers replays, conflicts and rule rejections normally, and ends with `503` only where a fresh encryption is needed, before anything is written (a rotation replay needs no encryption, so a lost rotation response is never turned into a lockout by an exhausted key).
 4. A database `CHECK (reserved <= 2^30)` is an absolute backstop independent of application configuration.
 
 **Why the hard stop is strict, and why the 32 shards were replaced.** With shards, each reservation updated one shard row, and the total across shards was read separately. Two instances working on different shards could both see room below the limit and both reserve, and instances already holding allowances kept encrypting after another instance saw the limit exceeded. The draft therefore only approximated the limit, up to one block per instance. The single row removes the race: PostgreSQL's row lock serialises every reservation under the key, and a waiting update re-evaluates its `WHERE` clause against the latest committed `R` before changing anything, so two instances cannot both be granted the last block. Allowances are inside `R` by construction, because a unit enters an allowance only after it was added to `R`. So the number of invocations is at most the number of units ever reserved, which is at most 2^30. Contention is one statement per 1024 encryptions per instance on one row, which is not significant at DuoCode's expected volume. Correctness was chosen over parallelism.
@@ -198,16 +198,17 @@ Prohibited without exception: decrypted values in logs, diagnostics, metrics, tr
 **Key ring.** A JSON file mounted as a Docker secret, readable only by the application user:
 
 ```json
-{ "version": 1, "generation": 7, "active": 2,
+{ "version": 1, "generation": 7, "highestKeyId": 2, "active": 2,
   "keys": {
-    "1": { "key": "<base64 32 bytes>", "status": "DECRYPT_ONLY", "createdAt": "2026-11-21T00:00:00Z", "deactivatedAt": "2027-06-01T00:00:00Z" },
-    "2": { "key": "<base64 32 bytes>", "status": "ACTIVE",       "createdAt": "2027-06-01T00:00:00Z" } } }
+    "1": { "key": "<base64 32 bytes>", "selfTest": "<base64 known-answer ciphertext>", "status": "DECRYPT_ONLY", "createdAt": "2026-11-21T00:00:00Z", "deactivatedAt": "2027-06-01T00:00:00Z" },
+    "2": { "key": "<base64 32 bytes>", "selfTest": "<base64 known-answer ciphertext>", "status": "ACTIVE", "createdAt": "2027-06-01T00:00:00Z" } } }
 ```
 
 - Exactly one key is `ACTIVE`. Older keys needed for existing ciphertext or restorable backups are `DECRYPT_ONLY`. A key that has been `DECRYPT_ONLY` never becomes `ACTIVE` again: when a key stops being active its `deactivatedAt` is set, and the application refuses to start if a key with `deactivatedAt` set is marked `ACTIVE`. `generation` increases with every change to the ring, so the newest copy can be identified.
 - The file lives outside the PostgreSQL container and the database volume. Database backups never include it.
 - The path comes from `CODE_KEYRING_FILE`. Key material is never placed in environment variables, migrations, images, logs or the repository. `.gitignore` excludes `secrets/`.
-- At start-up the application loads the ring, validates each key is 32 bytes and statuses are consistent, encrypts and decrypts a self-test value with the active key, and refuses to start on any failure. `/healthz` reports not ready without a loaded ring.
+- **Key material and identifiers are never reused.** The loader and `keys:generate` reject a ring in which two identifiers carry the same 32 bytes of key material (compared by the derived key fingerprint, never by printing the material), and reject a new identifier that is not above `highestKeyId`. `highestKeyId` only ever grows, even if an entry is later removed, so an identifier cannot be handed out twice. Reusing material under a new identifier would give the same AES key a fresh zero counter and bypass its usage budget, so it is treated as an error (CR-11). `keys:verify` repeats both checks.
+- **Start-up self-test does not encrypt.** At start-up the application loads the ring, validates each key is 32 bytes and statuses are consistent, and decrypts each key's `selfTest` known-answer value, which `keys:generate` encrypted once when it created the key (that single encryption is reserved and counted through the normal reservation statement). Because the self-test never encrypts, an instance can start when the active key is sealed or at the hard stop: it serves reads and decrypts existing data, and answers every request that needs a fresh encryption with `503`. It refuses to start on any ring failure. `/healthz` reports not ready without a loaded ring.
 - Application instances and the `cleanup` and re-encryption tasks all mount the same ring. The `db` and `backup` services never mount it.
 
 **Generation.** `deno task keys:generate` prints a new random 32-byte key in base64 and the next free key id. The operator adds it to the ring file. The command writes nothing into the repository.
@@ -218,11 +219,11 @@ Prohibited without exception: decrypted values in logs, diagnostics, metrics, tr
 - A ring backup is kept at least as long as any database backup that may contain ciphertext under any key in it (R10.11).
 - Two people can recover the ring. Nobody keeps the only copy.
 
-**Recovery (database restore).** See also `deployment.md` section 6.
+**Recovery (database restore).** See also `deployment.md` section 6. Before step 1, stop and drain every process that can encrypt (`app`, `cleanup`, `reencrypt` and any key job), so no allowance or counter changes during the restore and any lossless comparison.
 1. Restore the database backup into a clean database.
-2. Obtain the newest ring backup (highest `generation`, never an older copy that shows a different key `ACTIVE`). It must contain every `key_id` referenced by the restored data.
+2. Obtain the **newest** ring (highest `generation`) and its `highestKeyId`, never a ring from the database backup date, because the database may have gone back past keys that were created and used afterwards. It must contain every `key_id` referenced by the restored data.
 3. Run `deno task keys:verify` against the restored database and the ring. It lists the distinct `key_id` and `fingerprint_key_id` values, confirms each is in the ring, and test-decrypts every ciphertext row (R10.12).
-4. **Activate a new key before traffic (R10.13, RD-13).** Generate a new key, add it to the ring as the only `ACTIVE` key, mark the previous active key `DECRYPT_ONLY`, increase the ring `generation`, back up the ring, and **seal every older key** (`deno task keys:seal`) so the restored, possibly lowered counters cannot grant reservations. Restart every instance so that no allowance survives. Skip this only if the restore is proved lossless. Re-run `keys:verify`.
+4. **Activate a new key before traffic (R10.13, RD-13).** Generate a new key with an identifier above `highestKeyId`, add it to the ring as the only `ACTIVE` key, mark the previous active key `DECRYPT_ONLY`, increase the ring `generation`, back up the ring, and **seal every key identifier in the newest ring** (`deno task keys:seal`), including a key whose `key_usage` row is absent from the restored database (sealing inserts a sealed row), so the restored, possibly lowered counters cannot grant reservations. Restart every instance so that no allowance survives. Skip the new key and the sealing only if the restore is proved lossless, and still restart every instance. Re-run `keys:verify`.
 5. Only then start the application, run cleanup, and accept traffic.
 6. If a needed key is missing, the rows under it are unrecoverable. Affected games cannot be played or shown. Their outcomes and counts survive. Games that finished remain deletable by cleanup.
 
@@ -343,6 +344,7 @@ Mechanisms:
 | T32 | Race between expiry and operations | Single reference time, `>=` rule, lock | None identified |
 | T33 | Decrypted game data leaving through an unintended path | Exactly two serialisation exceptions, results gated on `COMPLETED` before any ciphertext read, redacting wrapper, no persistent plaintext, canary tests | Runtime memory residue |
 | T34 | Guessable rotation key | UUIDv4 required, 122 random bits, format enforced, plus old token needed | Client may use a weak generator. The server cannot detect it |
+| T35 | Key material reuse under a new identifier, or identifier reuse, giving the same AES key a fresh counter | Ring loader and `keys:generate` reject duplicate material and non-increasing identifiers, `highestKeyId` is monotonic, `keys:verify` repeats the check (CR-11) | Operator editing the ring by hand is detected at the next start-up |
 
 ## 6. Privacy (R13.4, R13.7)
 
