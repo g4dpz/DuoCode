@@ -1,4 +1,4 @@
-# DuoCode Implementation Tasks (Backend MVP 1), revision 3
+# DuoCode Implementation Tasks (Backend MVP 1), revision 3.1 (final for gate review)
 
 Follows `requirements.md` (R#, decision IDs), `traceability.md` and the specification set listed in `requirements.md`. Test-first throughout. Test group IDs (`TS-xxx`) are defined in `test-strategy.md`.
 
@@ -8,14 +8,14 @@ Follows `requirements.md` (R#, decision IDs), `traceability.md` and the specific
 
 Specification artefacts are drafted. These tasks are the owner's approvals. To sign off a gate, mark it `[x]` and append the date and approver. A gate is signed off only by an explicit owner statement.
 
-Revision 3 review package: `revision-3-review-package.md` (change summary, review checklist, remaining decisions).
+Revision 3.1 review package: `revision-3.1-review-package.md` (change summary from revision 3, verification results, remaining decisions). No gate below is signed off.
 
-- [ ] 1.1 **Gate 1: Owner approval of the revised requirements.** Review `requirements.md` revision 3 and `traceability.md`. Decide each pending item RD-1 to RD-10. Confirm the approval status of every requirement R1 to R21. (All requirements)
-- [ ] 1.2 **Gate 2: Owner approval of the revised architecture.** Review `design.md` and `deployment.md`: layers, credential model and authorisation point, transaction and lock ordering, rate-limiting design and values, key ring handling, scheduling, backups, restore. (R8, R18, R20, R21)
-- [ ] 1.3 **Gate 3: Approval of the OpenAPI specification.** Review `openapi/openapi.yaml` against the requirements: operations, credentials, idempotent rotation, error codes, status codes, nickname rules, admin server entries, privacy of codes. Redocly lint passes. No handler is written before approval. (R12, R5, R8, R9)
-- [ ] 1.4 **Gate 4: Approval of the database schema and state machine.** Review `database-schema.md` and `state-machine.md`: tables, constraints (including encrypted guesses and the previous-guess foreign key), retention clock, cleanup and rate-limit SQL, expiry rule, transition tables, credential lifecycle, idempotent rotation. (R5, R8, R9, R11)
-- [ ] 1.5 **Gate 5: Review of the security assessment.** Review `security-assessment.md`: threats T1 to T32, guess encryption assessment, rotation implications, key management and recovery, logging and metrics rules, residual risks, and the owner checklist in section 7. Review `test-strategy.md` and `simulator-design.md` for coverage of the same. (R10, R13)
-- [ ] 1.6 **Gate 6: Confirmation of the licensing files and contributor arrangements.** Confirm the AGPL-3.0-only text for `LICENSE`, the `NOTICE` content, the SPDX header form, and the contribution terms to put in `CONTRIBUTING.md` before outside contributions. Confirm that the owners' separate collaboration and IP agreement covers authority to grant commercial licences. Record outstanding legal items. (R19)
+- [ ] 1.1 **Gate 1: Owner approval of the revised requirements.** Review `requirements.md` revision 3.1 and `traceability.md`. All technical decisions (OD, ND, C, CL, CR, RD-1 to RD-13, CH-1 to CH-6) are recorded as approved. Confirm the approval status of every requirement R1 to R21. (All requirements)
+- [ ] 1.2 **Gate 2: Owner approval of the revised architecture.** Review `design.md` and `deployment.md`: layers, credential model and authorisation point, the preliminary-lookup, rate-limit, encryption-reservation and transaction sequence, lock ordering, the approved rate-limit values, the pinned Caddy build, key ring handling, restore with new-key activation, scheduling, backups, accepted operational risks. (R8, R18, R20, R21)
+- [ ] 1.3 **Gate 3: Approval of the OpenAPI specification.** Review `openapi/openapi.yaml` against the requirements: operations, credentials, idempotent rotation with the UUIDv4 key, error codes, status codes, nickname rules, admin server entries, one-rematch-ever behaviour, privacy of codes and the two decrypted-value responses. Redocly lint passes. No handler is written before approval. (R12, R5, R8, R9)
+- [ ] 1.4 **Gate 4: Approval of the database schema and state machine.** Review `database-schema.md` and `state-machine.md`: tables, constraints (including encrypted guesses, the previous-guess foreign key, `rematch_markers` and `key_usage`), retention clock, cleanup and rate-limit SQL, expiry rule, read and write order, transition tables, credential lifecycle, idempotent rotation. (R5, R8, R9, R11)
+- [ ] 1.5 **Gate 5: Review of the security assessment.** Review `security-assessment.md`: threats T1 to T34, guess encryption assessment, serialisation exceptions (two for game data, one for the rotation replay token), rotation implications, nonce thresholds with the durable reservation counter and the restore rule, IP HMAC privacy, logging and metrics rules, residual risks, and the owner checklist in section 7. Review `test-strategy.md` and `simulator-design.md` for coverage of the same. (R10, R13)
+- [ ] 1.6 **Gate 6: Confirmation of the licensing files and contributor arrangements.** The proposed `LICENSE`, `NOTICE` and `CONTRIBUTING.md` exist at the repository root. They contain placeholders for the inputs the owners still have to give: LI-1 exact copyright holder names, LI-2 whether a contributor licence agreement is required, LI-3 legal review of the contribution terms, LI-4 security contact address. Confirm the AGPL-3.0-only text in `LICENSE` (FSF text, checksum in the review package) and the SPDX header form. Confirm that the owners' separate collaboration and IP agreement covers authority to grant commercial licences. Record outstanding legal items. (R19)
 - [ ] 1.7 Confirm the README matches the approved layout and statements. (R19.1, OD-1)
 - [ ] 1.8 Request an independent GitHub Copilot review of the specification set. Record findings and owner dispositions.
 - [ ] 1.9 **Phase 1 sign-off.** Possible only when 1.1 to 1.6 are all signed off. The owner records approval and authorises Phase 2 in writing here.
@@ -23,7 +23,7 @@ Revision 3 review package: `revision-3-review-package.md` (change summary, revie
 ## Phase 2: Repository scaffold and CI
 
 - [ ] 2.1 Create the directory layout in `design.md`, section 3 (`backend/`, `tools/`, `openapi/`, `docs/`, `deployment/`, `postman/`). No `frontend/` yet. (R19.1)
-- [ ] 2.2 Add `LICENSE`, `NOTICE`, `CONTRIBUTING.md`, `.gitignore` (including `.env`, `secrets/`, key files) as approved in 1.6. (R19.2)
+- [ ] 2.2 Verify that `LICENSE`, `NOTICE`, `CONTRIBUTING.md` and `.gitignore` (including `.env`, `secrets/`, key files) are present exactly as approved at gate 6, and add the SPDX header check. They already exist as proposals. (R19.2)
 - [ ] 2.3 Create `backend/deno.json` with tasks `fmt`, `lint`, `check`, `test`, `migrate`, `cleanup`, `reencrypt`, `keys:generate`, `keys:verify`, and the `tools/simulator` task `simulate`. Pin imports and commit `deno.lock`. (R18)
 - [ ] 2.4 Typed configuration module with start-up validation of every key in `design.md`, section 13 (non-positive TTLs, replay window and rate limits rejected, secrets never printed, trusted proxies required in production). (R11.1, R18.4)
 - [ ] 2.5 Finish and verify GitHub Actions per `test-strategy.md`, section 17: `check`, `test`, `openapi`, `docs`, `simulate`, `audit`, `build`. The workflow skeleton, the OpenAPI and hygiene jobs, `copilot-setup-steps.yml` and `.github/copilot-instructions.md` already exist and must be updated for revision 3 rules. (R17.3)
@@ -44,26 +44,26 @@ Revision 3 review package: `revision-3-review-package.md` (change summary, revie
 ## Phase 4: Persistence, cryptography and rate limiting
 
 - [ ] 4.1 Migration runner with advisory lock and `schema_migrations`. Tests: empty database, re-run, concurrent starts. (R18.3) (TS-DB)
-- [ ] 4.2 `0001_init.sql` matching `database-schema.md`. A constraint test for every rule in section 3 of that file, including the previous-guess foreign key, nickname checks, rematch uniqueness and cascades. (R5.10, R8, R9.4, R11) (TS-DB)
+- [ ] 4.2 `0001_init.sql` matching `database-schema.md`. A constraint test for every rule in section 3 of that file, including the previous-guess foreign key, nickname checks (including bidi controls), `rematch_markers` (one ever, survives rematch deletion), `key_usage` and cascades. (R5.10, R8, R9.4, R11) (TS-DB)
 - [ ] 4.3 PostgreSQL pool and transaction helper: game-lock first, `lock_timeout`, `statement_timeout`, `idle_in_transaction_session_timeout`, single retry on deadlock, serialisation failure or unique-violation backstop. Lock-order instrumentation for TS-CONC-17. (R5.11)
 - [ ] 4.4 Credential generation (`dca_`, `dci_`, `dcr_`, 256 bits, independent draws), SHA-256 hashing, constant-time comparison for the admin token. Tests for format, uniqueness and hash-only storage. (R8.1, R8.2) (TS-CRED)
-- [ ] 4.5 Key ring loader (status, ids, self-test), HKDF key derivation, `SecretCodeVault` (`sealCode`, `sealGuess`, `sealToken`, `use`, `fingerprint`), AES-256-GCM with AAD as in `security-assessment.md` section 3.4, redacting wrapper, per-key encryption counter. Tests: round trip, tamper, AAD swap, unknown key id, redaction, nonce uniqueness, start-up refusal. (R10) (TS-ENC)
-- [ ] 4.6 `keys:generate`, `reencrypt` (one game per transaction, includes guesses, rotation ciphertext and fingerprints) and `keys:verify`. Tests: rotation, repeatability, concurrency with traffic, kill mid-run, missing key detection. (R10.5, R10.11, R10.12) (TS-ENC, TS-CONC-14)
+- [ ] 4.5 Key ring loader (status, ids, `generation`, `deactivatedAt` rule, self-test), HKDF key derivation, `SecretCodeVault` (`sealCode`, `sealGuess`, `sealToken`, `use`, `fingerprint`, results method that requires a `CompletedGame` value), AES-256-GCM with AAD as in `security-assessment.md` section 3.4, redacting wrapper, the durable reservation counter (`ensureAllowance` before `BEGIN`, block reservation in a separate autocommit transaction, consumption at every invocation, thresholds warn, rotate-by, hard stop, fail closed with `503`). Tests: round trip, tamper, AAD swap, unknown key id, redaction, nonce uniqueness, results gating, the full counter test list in TS-ENC (rollback, crash, multi-instance, never under-count), thresholds, start-up refusal. (R10) (TS-ENC)
+- [ ] 4.6 `keys:generate`, `reencrypt` (one game per transaction, includes guesses, rotation ciphertext and fingerprints) and `keys:verify` (key presence, test decryption, and the invariant rows-under-key not above reserved total). Tests: rotation, repeatability, concurrency with traffic, kill mid-run, missing key detection, counter rollback detection. (R10.5, R10.11, R10.12, R10.13) (TS-ENC, TS-CONC-14)
 - [ ] 4.7 RFC 8785 canonicaliser and fingerprint functions, with RFC test vectors and property tests. (R5.12) (TS-IDEM)
-- [ ] 4.8 Rate limiter: atomic token-bucket upsert, subject hashing (HMAC of IP, hash of token), trusted-proxy IP extraction, fail-closed behaviour. Tests as TS-RATE. (R20)
+- [ ] 4.8 Rate limiter: atomic token-bucket upsert as separate autocommit statements before the request transaction, subject hashing (HMAC of IP, hash of player id), preliminary credential lookup, trusted-proxy IP extraction, fail-closed behaviour. Tests as TS-RATE. (R20)
 - [ ] 4.9 Repositories behind interfaces: games, players, credentials, secret codes, guesses, idempotency keys, token rotations, results, rate limits. Tested against PostgreSQL. (R7.6)
 
 ## Phase 5: Services
 
-- [ ] 5.1 `authorise` (the authorisation point): reference time, lookup, type, revocation, expiry, rate limit, rotation-replay option. Write path under the game lock, read path in a snapshot transaction. Tests for TS-CRED including forced interleavings. (R8.7, R8.8, R8.10 to R8.12)
-- [ ] 5.2 Nickname validation shared by create, join and rematch. (R1.3) (TS-VAL)
+- [ ] 5.1 `authorise` (the authoritative authorisation point): reference time, lookup, type, revocation, expiry, rotation-replay option. Write path under the game lock, read path as the first statement of a read-only `REPEATABLE READ` transaction. Preliminary lookup as a separate non-authoritative step. Tests for TS-CRED including forced interleavings (TS-CONC-18). (R8.7, R8.8, R8.10 to R8.12)
+- [ ] 5.2 Nickname validation shared by create, join and rematch (trim, empty, 24 code points, `Cc`, bidi controls, malformed Unicode, preserve). (R1.3) (TS-VAL)
 - [ ] 5.3 `createGame` with tests (state, tokens shown once, hashes stored, `expires_at`). (R1)
 - [ ] 5.4 `joinGame`: invitation consumption, full game, bad invitation (same response as unknown or deleted game), expired game `410`, parallel joins. (R2) (TS-CONC-01, TS-CONC-02)
 - [ ] 5.5 `submitSecretCode`: encryption, no echo, once only, activation on second code, parallel submissions. (R3, R10)
 - [ ] 5.6 `submitGuess` per `design.md`, section 8.3: keyed fingerprint, idempotent replay, conflict, check order from `state-machine.md`, section 1.3, completion in the same transaction. Every case in `test-strategy.md`, section 4. (R4, R5, R7.1) (TS-IDEM, TS-CONC-03 to TS-CONC-05)
-- [ ] 5.7 `getStatus` (opponent progress summary only), `getProgress` (decrypts caller's own guesses), `getResults` (decrypts only after completion). Tests for secrecy and the decrypt spy. (R6, R7, R3.7) (TS-SEC, TS-ENC)
-- [ ] 5.8 `rotateAccessToken` with idempotency and replay window, revoking the player's unused capability. Tests for lost response, replay rules and TS-CONC-06 to TS-CONC-08. (R8.6, R8.13, R8.14)
-- [ ] 5.9 `mintRematchCapability` and `createRematch` per `state-machine.md`, sections 3 and 4, with deletion behaviour. TS-CRED rematch cases and TS-CONC-09, TS-CONC-10. (R9)
+- [ ] 5.7 `getStatus` (opponent progress summary only), `getProgress` (decrypts the caller's own guesses), `getResults` (verifies `COMPLETED`, then reads ciphertext, then decrypts). Tests for secrecy, the decrypt spy and zero ciphertext reads before completion. (R6, R7, R3.7, R10.7) (TS-SEC, TS-ENC)
+- [ ] 5.8 `rotateAccessToken` with the UUIDv4 key rule, idempotency and replay window that never reactivates the old token, revoking the player's unused capability. Tests for lost response, loss after the window, replay rules and TS-CONC-06 to TS-CONC-08. (R8.6, R8.13, R8.14)
+- [ ] 5.9 `mintRematchCapability` and `createRematch` per `state-machine.md`, sections 3 and 4: marker insert in the rematch transaction, revocation of every other unused capability on success (CH-3), `REMATCH_ALREADY_CREATED` on mint after a marker exists even after the rematch game is deleted, deletion behaviour. TS-CRED rematch cases and TS-CONC-09, TS-CONC-10, TS-CONC-19. (R9)
 - [ ] 5.10 Expiry evaluation and `expires_at` maintenance per `database-schema.md`, section 5, with the `>=` rule. Tests with an injected clock. (R11.2 to R11.4) (TS-RET)
 - [ ] 5.11 Cleanup task per `database-schema.md`, section 7, with dry run, rotation ciphertext clearing and rate-limit pruning. Tests for repeatability, concurrency, re-check and lock timeouts. (R11.5 to R11.8, R11.11) (TS-RET, TS-CONC-10 to TS-CONC-13)
 
@@ -93,7 +93,7 @@ Revision 3 review package: `revision-3-review-package.md` (change summary, revie
 - [ ] 8.2 Random strategy. (R15.1)
 - [ ] 8.3 Systematic strategy, independently written. (R15.1)
 - [ ] 8.4 Logic-based strategy, independently written. (R15.1)
-- [ ] 8.5 Game runner and all checks in `simulator-design.md`, section 6, including idempotent guess retries, rotation with lost responses and `429` backoff. (R15.2)
+- [ ] 8.5 Game runner and all checks in `simulator-design.md`, section 6, including idempotent guess retries, deterministic rotation keys (`--test-deployment` required), rotation with lost responses, nickname display-safety checks and `429` backoff. (R15.2, R15.5)
 - [ ] 8.6 Concurrency, metrics, JSON and text reports. (R15.4)
 - [ ] 8.7 Failure recording and `--replay seed:gameNumber`, with a test proving identical decisions on replay. (R15.3)
 - [ ] 8.8 Exit codes, CI `simulate` job. (R17.3)
@@ -102,9 +102,9 @@ Revision 3 review package: `revision-3-review-package.md` (change summary, revie
 
 - [ ] 9.1 Dockerfile (non-root, read-only root, minimal Deno permissions). (R18.1)
 - [ ] 9.2 `deployment/docker-compose.yml` with `proxy`, `app` (public and admin listeners), `db`, `migrate`, `cleanup`, `backup`, secrets for the key ring and the rate-limit key, networks per `deployment.md` section 1. (R18.2, R21.1, R21.2)
-- [ ] 9.3 Caddy build with the chosen rate-limit module (or Nginx, per RD-1) and configuration with the approved limits and `/admin/*` returning `404`. (R20.1)
+- [ ] 9.3 Caddy custom build per `deployment.md` section 4.3: re-verify and record pins in `BUILD-PINS.md`, commit `go.mod`, `go.sum`, `main.go`, `Dockerfile`, build twice in CI and compare digests, attest provenance, generate an SBOM, run `govulncheck`, reference the image by digest in Compose, write `BUILD-RECORD.md`, document maintenance and the Nginx fallback. Configuration with the approved limits and `/admin/*` returning `404`. (R18.6, R20.1) (TS-OPS)
 - [ ] 9.4 `.env.example`, `secrets.example/`, configuration and operations docs including key generation, ring backup, rotation, retirement, compromise and recovery procedures. (R10.9, R18.4, R21.5)
-- [ ] 9.5 Backup job and the restore and key-recovery drills in `deployment.md` section 6, with the key ring supplied separately. (R11.9, R21.4) (TS-OPS)
+- [ ] 9.5 Backup job and the restore and key-recovery drills in `deployment.md` section 6, including new-key activation (R10.13) and the demonstration that restored counters are behind, with the key ring supplied separately. (R11.9, R21.4) (TS-OPS)
 - [ ] 9.6 Key rotation drill: add a key, `reencrypt`, `keys:verify`, no failed requests. (R10.5, R10.12)
 - [ ] 9.7 Deploy to the development Linux environment and meet the acceptance list in `deployment.md`, section 11.
 
@@ -115,6 +115,7 @@ Revision 3 review package: `revision-3-review-package.md` (change summary, revie
 - [ ] 10.3 Demonstrate a complete game, a rotation with a lost response, a rematch, a cleanup and a restore drill through two independent curl or Postman sessions. (Baseline 8.2)
 - [ ] 10.4 Walk through baseline 17.1 Definition of Done and attach evidence. Update `traceability.md` status to implemented and tested.
 - [ ] 10.5 Request an independent Copilot review of the final implementation. Owners approve MVP acceptance.
+- [ ] 10.6 **Before production deployment:** reassess the absence of point-in-time recovery (RD-7, `deployment.md` section 12) and record the owner's decision to accept it again or to add WAL archiving. Reassess the other accepted operational risks in the same section.
 
 ## Deferred (separate specs when started)
 

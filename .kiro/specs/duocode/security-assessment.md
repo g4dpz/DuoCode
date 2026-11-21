@@ -1,8 +1,8 @@
-# DuoCode Security Assessment (revision 3)
+# DuoCode Security Assessment (revision 3.1, final for gate review)
 
 Owns: threats and mitigations, credential security, rotation implications, encryption and key management, logging and metrics rules, residual risks. Related: `requirements.md` (R3, R5, R8, R10, R13, R20, R21), `design.md` (credential model, authorisation point, vault, lock ordering), `database-schema.md` (storage), `state-machine.md` (credential lifecycle, idempotent rotation), `../../../openapi/openapi.yaml` (error behaviour), `deployment.md` (secrets, proxy, backups, restore).
 
-Status: draft for owner review (Phase 1 gate 1.5).
+Status: draft for owner review (Phase 1 gate 1.5). Nothing here is signed off.
 
 ## 1. Assets and trust boundaries
 
@@ -47,7 +47,7 @@ DuoCode has no accounts, no email and no independently verified identity. A bear
 
 Problem: a rotation commits on the server, the response is lost, and the client holds only a revoked token. Without a remedy the player is locked out by a network failure.
 
-Mechanism (`state-machine.md` section 3.1): rotation requires an `Idempotency-Key`. For `ROTATION_REPLAY_SECONDS` (default 600 s, RD-3) the server will, on receipt of the revoked old token plus the same key and fingerprint, return the same new token again. The new token is held during the window as AES-256-GCM ciphertext.
+Mechanism (`state-machine.md` section 3.1): rotation requires an `Idempotency-Key` that is a **version 4 UUID from a cryptographically secure random source** (122 random bits), because here the key is also the replay secret. For `ROTATION_REPLAY_SECONDS` (600 s, approved RD-3) the server will, on receipt of the revoked old token plus the same key and fingerprint, return the original response, the same new token, again. The new token is held during the window as AES-256-GCM ciphertext. **A replay does not restore, reactivate or un-revoke the old token**: it changes no stored row, and the old token still receives `401` on every other operation.
 
 Implications:
 
@@ -57,12 +57,15 @@ Implications:
 | 2 | The server briefly stores a new token in recoverable form. | Encrypted with the key ring, bound by AAD to game, player and rotation id. A database-only reader cannot use it. A reader with database and key ring access can read it during the window. Cleared by cleanup after the window (at most window plus one cleanup interval). Outside the window the replay rule refuses, even if the ciphertext still exists |
 | 3 | The first rotator wins. | If an attacker with a stolen token rotates before the owner, the attacker gets the seat, and the owner's later rotation fails (`401`). Replay does not change this. It is inherent to bearer tokens without accounts |
 | 4 | The attacker can still replay for the owner's rotation. | Only with the key. See 1 |
-| 5 | Lost response and lost window. | After the window the seat is lost. Clients should persist the old token and the key before sending, retry promptly and retry with backoff |
+| 5 | Lost response, then lost window. | Inside the window the retry succeeds. **After the window, if the replacement token was never stored by the client, the seat is lost permanently.** The server has deleted its copy, the old token is revoked, and nothing can restore either. The opponent and the game are unaffected and the game expires at its retention end. Clients must persist the old token and the key before sending, persist the new token on arrival, and retry promptly with backoff |
 | 6 | Replay must not become an oracle. | A wrong key, wrong token or elapsed window all give the same `401`. Replay does not modify state or extend retention |
-| 7 | Rate limiting. | `tok:rotate` bucket, small capacity (`deployment.md` section 4) |
+| 7 | Rate limiting. | `pl:rotate` bucket keyed by player, small capacity (`deployment.md` section 4.2). Rotating does not reset it |
 | 8 | Keys in logs. | `Idempotency-Key` is never logged for rotation (R13.2) |
 | 9 | Interaction with rematch capability. | Rotation revokes the player's unused capability (R8.6), because a thief could have minted one before rotation |
-| 10 | Window length. | Longer windows help clients with long outages but extend exposure in 2. 10 minutes is proposed (RD-3) |
+| 10 | Window length. | Longer windows help clients with long outages but extend exposure in 2. 10 minutes is approved (RD-3) |
+| 11 | Key entropy. | A guessable key would let a holder of the old token replay. The key must be UUIDv4 from a CSPRNG (122 bits). The server rejects other UUID versions and malformed values, but cannot verify the source of randomness. The requirement is stated in the OpenAPI document and `docs/API.md`. Guess keys use the general any-version UUID rule because they are only labels |
+| 12 | Replay is not a second authorisation path. | The old token is accepted only by the rotation operation, only with the matching key, and only inside the window. A test asserts the old token fails every other operation after a replay (TS-CRED) |
+| 13 | Decrypted credential in a response. | The replay response contains the decrypted replacement token. This is the narrow third exception approved as RD-11, separate from the two game-data exceptions in section 3.5. It applies only when all five conditions hold (old token, original UUIDv4 key, matching fingerprint, valid window, replacement token not revoked). The token is never written to a log, diagnostic, metric, trace or error response, and a canary test checks that (TS-SEC) |
 
 Alternatives rejected: client-generated tokens (clients may generate weak tokens, violating ND-6), a two-phase confirm-on-first-use rotation (leaves both tokens live for an unbounded time and writes on reads), and no replay (locks players out on network faults).
 
@@ -109,8 +112,43 @@ Implementation implications:
 ### 3.3 Key identifiers and nonce uniqueness (CL-3)
 
 - **Key identifiers.** Small positive integers, assigned in increasing order, never reused. Every ciphertext row stores the `key_id` that encrypted it. Fingerprint rows store `fingerprint_key_id`. The identifier is part of the AAD, so changing it makes decryption fail.
-- **Nonces.** 96 bits from `crypto.getRandomValues`, fresh for every encryption, including every re-encryption. Uniqueness is probabilistic. Under NIST SP 800-38D the limit for random 96-bit nonces under one key is 2^32 encryptions. With about 22 encryptions per game, one million games use about 2 × 10^7 encryptions, well below the limit. The vault counts encryptions per key id (metric `duocode_encryptions_total{key_id}`) and an alert fires at 2^28 so the key is rotated long before the bound (R10.10, RD-10). Reuse of a nonce under one key would break confidentiality and authenticity for the affected rows, which is why the alert threshold is conservative.
+- **Nonces.** 96 bits from `crypto.getRandomValues`, fresh for every encryption, including every re-encryption. Uniqueness is probabilistic, so it needs a per-key budget (RD-10, section 3.3a).
 - **Never deterministic.** Two encryptions of the same plaintext always differ.
+
+### 3.3a Nonce budget, rotation thresholds and the usage counter (RD-10 and RD-13, approved)
+
+Facts: random 96-bit nonces with AES-GCM. The probability that any two of `n` encryptions under one key share a nonce is about `n² / 2^97`. NIST SP 800-38D allows at most `2^32` invocations per key with random nonces, which bounds that probability at `2^-32`.
+
+| Policy point | Encryptions under one key | Collision probability `n² / 2^97` | Margin against the NIST target of 2^-32, in probability | Margin in count against 2^32 |
+|---|---|---|---|---|
+| NIST maximum | 2^32 | 2^-33 | 2× | 1× |
+| Hard stop (refuse to encrypt) | 2^30 | 2^-37 | 32× | 4× |
+| Rotation required by | 2^28 | 2^-41 | 512× | 16× |
+| Warning | 2^27 | 2^-43 | 2048× | 32× |
+
+Rationale:
+- At about 22 encryptions per game (2 codes, up to 20 guesses), 2^28 is about 12 million games per key. A new key per year or per 2^28 encryptions, whichever comes first, is far beyond the expected volume, so the threshold costs nothing in practice and gives a wide safety margin.
+- Re-encryption counts too: every row it rewrites is a new encryption under the new key.
+- The three points give time to react: the warning prompts planning, the rotation point makes rotation mandatory, and the hard stop makes the application fail closed before the limit rather than silently exceed it.
+
+**Mechanism (RD-13, approved with conditions): durable reservations.** The counter does not count encryptions after the fact. It counts *reservations* made before use, so it cannot be rolled back with the application transaction and cannot under-count.
+
+1. Before an operation that may encrypt, the instance makes sure its in-memory allowance for the active key covers the operation's worst case. This happens before the request transaction begins.
+2. If it does not, the instance reserves a block (default 1024) in its own short autocommit transaction on a separate connection (`database-schema.md` section 6.2). Only after that transaction commits is the block added to the allowance.
+3. Each encryption invocation consumes one unit of the allowance at the moment it happens, whatever happens to the surrounding transaction afterwards.
+4. If the reservation fails, nothing is encrypted and the request fails closed with `503`.
+
+Why this meets the conditions:
+- *Cannot be rolled back with the application transaction:* the reservation is committed independently, earlier.
+- *Account for every invocation, including failed or rolled-back transactions:* invocations consume reserved units regardless of the transaction outcome.
+- *No underestimate:* an encryption needs a unit, a unit needs a committed reservation, so `sum(reserved) >= encryptions performed`. Crashes and unused allowance only make the counter higher.
+- *Multiple instances:* each reserves its own blocks with atomic increments. Overshoot of a threshold is at most one block per instance.
+
+**Limit of the mechanism, and the restore rule (RD-13).** The invariant holds for the live database. If the database is restored from an earlier backup, the `key_usage` rows go back in time too, and the counter may be lower than the encryptions really performed under the key after the backup. Ciphertexts from that period may survive elsewhere (the lost database, older backups, copies held by an attacker), so the nonce budget cannot be assumed unspent. The restore procedure therefore always generates a new key and makes it the only `ACTIVE` key before traffic is accepted, unless the restore is proved lossless (pre-restore counters not above restored counters). The previous key becomes `DECRYPT_ONLY`, stays in the ring so existing data decrypts, and never becomes `ACTIVE` again. The ring file lives outside the database and is not rolled back by a restore, so it keeps the new key and the old key's `DECRYPT_ONLY` status (`deployment.md` section 6.1).
+
+A further guard: `keys:verify` checks that the number of ciphertext rows under each key does not exceed its reserved total. A violation is evidence of a rolled-back or corrupted counter and fails verification.
+
+Configuration: `KEY_USAGE_WARN`, `KEY_USAGE_ROTATE_BY`, `KEY_USAGE_HARD_STOP`, `KEY_USAGE_BLOCK` (`design.md` section 13).
 
 ### 3.4 Authenticated additional data (AAD)
 
@@ -124,27 +162,36 @@ AAD is the concatenation of: an ASCII purpose label, a zero byte, the `key_id` a
 
 A ciphertext moved to another row, game, player or guess number fails authentication. Altering feedback counts in the database is detected when the guess is decrypted.
 
-### 3.5 Handling of decrypted values (R10.7, R10.8)
+### 3.5 Handling of decrypted values (R10.7, R10.8, CR-1)
+
+Permitted API serialisation of decrypted game data, exactly two cases:
+1. **Progress:** a player receives their own guesses and feedback through their authenticated progress endpoint.
+2. **Results:** both players' codes, guesses and feedback through the authenticated results endpoint, only once the game is `COMPLETED`.
+
+Also decrypted but not serialised as game data: the opponent's code during guess submission (only feedback leaves), and the stored token in a rotation replay (a credential, RD-11).
+
+Prohibited without exception: decrypted values in logs, diagnostics, metrics, traces, error responses, crash output and any persistent plaintext storage (including stored idempotency responses and any database column other than the ciphertext columns).
+
 
 - Decryption happens in the persistence layer's vault. The engine contains no cryptography and receives plaintext codes and guesses as arguments.
 - `vault.use(row, fn)` passes the plaintext to `fn`, clears the buffer afterwards, and returns only what `fn` returns. Guess code returns feedback only.
 - The wrapper type redacts under `JSON.stringify`, `toString` and `Deno.inspect`, so accidental logging prints `[REDACTED]`.
 - Exceptions raised inside `fn` are replaced by a generic error with no message content from `fn`, then rethrown.
 - JavaScript cannot guarantee memory erasure. Clearing buffers reduces the window. Copies may remain until garbage collected. This is a known runtime limit.
-- Results requests check `COMPLETED` in the same snapshot before any decrypt call (R7.5).
+- Results requests verify `COMPLETED` in the same snapshot before any ciphertext is read or decrypted. The vault's results method requires a `CompletedGame` value that only that check can create, and a repository spy test asserts zero ciphertext reads for a game that is not completed (R7.5, TS-ENC).
 
 ### 3.6 Key management (ND-9)
 
 **Key ring.** A JSON file mounted as a Docker secret, readable only by the application user:
 
 ```json
-{ "version": 1, "active": 2,
+{ "version": 1, "generation": 7, "active": 2,
   "keys": {
-    "1": { "key": "<base64 32 bytes>", "status": "DECRYPT_ONLY", "createdAt": "2026-11-21T00:00:00Z" },
+    "1": { "key": "<base64 32 bytes>", "status": "DECRYPT_ONLY", "createdAt": "2026-11-21T00:00:00Z", "deactivatedAt": "2027-06-01T00:00:00Z" },
     "2": { "key": "<base64 32 bytes>", "status": "ACTIVE",       "createdAt": "2027-06-01T00:00:00Z" } } }
 ```
 
-- Exactly one key is `ACTIVE`. Older keys needed for existing ciphertext or restorable backups are `DECRYPT_ONLY`.
+- Exactly one key is `ACTIVE`. Older keys needed for existing ciphertext or restorable backups are `DECRYPT_ONLY`. A key that has been `DECRYPT_ONLY` never becomes `ACTIVE` again: when a key stops being active its `deactivatedAt` is set, and the application refuses to start if a key with `deactivatedAt` set is marked `ACTIVE`. `generation` increases with every change to the ring, so the newest copy can be identified.
 - The file lives outside the PostgreSQL container and the database volume. Database backups never include it.
 - The path comes from `CODE_KEYRING_FILE`. Key material is never placed in environment variables, migrations, images, logs or the repository. `.gitignore` excludes `secrets/`.
 - At start-up the application loads the ring, validates each key is 32 bytes and statuses are consistent, encrypts and decrypts a self-test value with the active key, and refuses to start on any failure. `/healthz` reports not ready without a loaded ring.
@@ -160,10 +207,11 @@ A ciphertext moved to another row, game, player or guess number fails authentica
 
 **Recovery (database restore).** See also `deployment.md` section 6.
 1. Restore the database backup into a clean database.
-2. Obtain the ring backup that covers the backup date. It must contain every `key_id` referenced by the restored data.
+2. Obtain the newest ring backup (highest `generation`, never an older copy that shows a different key `ACTIVE`). It must contain every `key_id` referenced by the restored data.
 3. Run `deno task keys:verify` against the restored database and the ring. It lists the distinct `key_id` and `fingerprint_key_id` values, confirms each is in the ring, and test-decrypts every ciphertext row (R10.12).
-4. Only then start the application, run cleanup, and accept traffic.
-5. If a needed key is missing, the rows under it are unrecoverable. Affected games cannot be played or shown. Their outcomes and counts survive. Games that finished remain deletable by cleanup.
+4. **Activate a new key before traffic (R10.13, RD-13).** Generate a new key, add it to the ring as the only `ACTIVE` key, mark the previous active key `DECRYPT_ONLY`, increase the ring `generation`, and back up the ring. Skip this only if the restore is proved lossless. Re-run `keys:verify`.
+5. Only then start the application, run cleanup, and accept traffic.
+6. If a needed key is missing, the rows under it are unrecoverable. Affected games cannot be played or shown. Their outcomes and counts survive. Games that finished remain deletable by cleanup.
 
 **Rotation (planned, routine, for example annually or on staff change; mandatory at 2^28 encryptions).**
 1. Generate a new key. Add it to the ring as a new id. Back up the ring (new copy).
@@ -233,7 +281,7 @@ Mechanisms:
 | T2 | Impersonation of a player | 256-bit tokens, hashed storage, acting player derived from token, game id must match the credential's game | Token theft by other means (device compromise) |
 | T3 | Token guessing | 256-bit entropy. `ip:authfail` throttle and proxy limits. Uniform `401` | Negligible |
 | T4 | Token leaks through URLs or logs | Tokens only in headers and bodies. Log rules in section 4 | Client-side leaks |
-| T5 | Using an old or revoked token after rotation | `authorise` under the game lock for writes. One snapshot for reads. Replay only for the same key inside the window | A read that began before the commit may finish (bounded by request duration). Section 2.2 |
+| T5 | Using an old or revoked token after rotation | Preliminary lookup grants nothing. Authoritative validation under the game lock for writes and as the first statement of a snapshot for reads. Replay only for the same v4 key inside the window, and it never reactivates the old token | A read that began before the commit may finish (bounded by request duration). Section 2.2 |
 | T6 | Cross-game or cross-type token use | Credential bound to one game by composite foreign key and to one type. Rematch game has fresh credentials | None identified |
 | T7 | Brute-forcing the 1296-code space | Hard cap of 10 guesses enforced by service and constraints. Guessing needs a valid token. Rate limits | A player can still win by luck. Intended |
 | T8 | Exceeding attempts by racing or retrying | Game lock, idempotency keys, guess-number and previous-guess constraints | None identified |
@@ -252,35 +300,56 @@ Mechanisms:
 | T21 | Data kept longer than stated | `expires_at` retention clock, hourly cleanup service, backups at most 35 days (ND-8) | Deleted data persists in backups until they expire. A restore resurrects deleted data until cleanup runs (`deployment.md` section 6) |
 | T22 | Dependency compromise | Pinned and locked dependencies, minimal Deno permissions, CI dependency review | Supply-chain risk remains |
 | T23 | Seat takeover through a "recovery" flow | No recovery flow exists (section 2.1) | Lost token means lost seat |
-| T24 | Rematch hijack by a third party | Capability needs an access token to mint. Rotation revokes it. One rematch per game. Only the presenting player gets seat 1 credentials. Invitation delivered by the creator out of band | Anyone given the invitation can take seat 2, as with any invitation |
+| T24 | Rematch hijack by a third party | Capability needs an access token to mint. Rotation revokes it. One rematch ever per original game (marker row, RD-6), and creating it revokes every other unused capability (CH-3). Only the presenting player gets seat 1 credentials. Invitation delivered by the creator out of band | Anyone given the invitation can take seat 2, as with any invitation |
 | T25 | Weak randomness | Only `crypto.getRandomValues` and `crypto.randomUUID`. `Math.random` banned by lint rule outside the simulator | None identified |
 | T26 | Rotation replay abuse | Needs old token and key, short window, encrypted storage, same `401` outside the rule (section 2.2) | First rotator wins, window exposure |
-| T27 | Nonce reuse | Random 96-bit nonces, counter and alert at 2^28 per key, rotation (section 3.3) | Negligible at expected volume |
-| T28 | IP-based rate limit evasion or abuse of forwarded headers | Forwarded IP trusted only from `TRUSTED_PROXY_CIDRS`. Credential buckets keyed by token hash | Shared NAT users share limits. Attackers with many IPs |
-| T29 | Rate-limit data as personal data | Stores HMAC of IP with a secret, not the address. Rows deleted after an hour idle | HMAC key compromise allows IP confirmation for known addresses |
-| T30 | Restore reverts credential state | Documented procedure, RD-7. Rate-limit table cleared, cleanup run, tokens rotated after backup are reset | Players who rotated after the backup lose their seat. Revoked tokens revive |
+| T27 | Nonce reuse | Random 96-bit nonces, durable reservation counter shared by all instances, warning at 2^27, rotation by 2^28, hard stop at 2^30 (RD-10, RD-13, section 3.3a). New key after any restore | Negligible at expected volume. A restore without a new key could understate usage, which the procedure prevents |
+| T28 | IP-based rate limit evasion or abuse of forwarded headers | Forwarded IP trusted only from `TRUSTED_PROXY_CIDRS`. Player buckets keyed by player id after a preliminary lookup | Shared NAT users share limits. Attackers with many IPs. A holder of an old revoked token can drain the player's bucket until it refills |
+| T29 | Rate-limit data as personal data | Stores an HMAC of the IP with a secret, not the address. Rows deleted after an hour idle. Table excluded from backups (section 6.2) | HMAC key compromise together with a database copy allows IP confirmation, and for IPv4 enumeration of all addresses |
+| T30 | Restore reverts credential state | Documented procedure. Rate-limit table cleared, cleanup run, tokens rotated after backup are reset | Players who rotated after the backup lose their seat. Revoked tokens revive. No point-in-time recovery (RD-7, accepted risk, reassess before production) |
 | T31 | Stale or missing key at restore | `keys:verify` before traffic. Ring backup covers backup retention (3.6, 3.9) | Missing key means unrecoverable data |
 | T32 | Race between expiry and operations | Single reference time, `>=` rule, lock | None identified |
+| T33 | Decrypted game data leaving through an unintended path | Exactly two serialisation exceptions, results gated on `COMPLETED` before any ciphertext read, redacting wrapper, no persistent plaintext, canary tests | Runtime memory residue |
+| T34 | Guessable rotation key | UUIDv4 required, 122 random bits, format enforced, plus old token needed | Client may use a weak generator. The server cannot detect it |
 
 ## 6. Privacy (R13.4, R13.7)
 
 - No accounts, email addresses or real identity. Nicknames are free text and might contain personal data. The privacy notice says so.
 - Nicknames are visible only to the two players of that game.
-- The application writes no client IP address. The rate limiter stores an HMAC of the IP. The proxy writes no IP in its access log by default (`deployment.md`), and if the owners enable it for abuse investigation, a retention period must be set.
+- The application writes no client IP address. The rate limiter stores an HMAC of the IP (section 6.2). The proxy writes no IP in its access log by default (`deployment.md`), and if the owners enable it for abuse investigation, a retention period must be set.
 - Retention and deletion follow R11 and `database-schema.md`. A game is deleted at its retention end, with nicknames, codes, guesses and credentials. Backups hold deleted data for at most 35 days.
 - There is no player-initiated deletion endpoint in MVP 1 (ND-8). A holder of a bearer token proves control of a seat, not an identity.
 - Metrics and logs are privacy-safe (section 4).
 - UK GDPR review items for the owners: lawful basis statement, privacy notice text, data processor arrangements for the VPS provider, backup retention wording. They are tasks, not decided here.
 
+### 6.2 Client IP handling for rate limiting (RD-9)
+
+**What is stored.** In `rate_limits`, for IP scopes: `subject = HMAC-SHA-256(RATE_LIMIT_HMAC_KEY, client IP)` (32 bytes), the scope name, a token count and the last refill time. The raw address is never written to the database, logs, metrics or traces by the application.
+
+**Privacy implications.**
+- An IP address is personal data under UK GDPR. A keyed HMAC is pseudonymised data, not anonymous data: whoever holds the key can test whether a given address is in the table, and the IPv4 space (2^32) is small enough that holder of key plus database could recover every address in it. The key is therefore the protection and is handled as a secret.
+- The purpose is abuse prevention (rate limiting), a legitimate interest. The privacy notice must say that IP addresses are processed transiently for this purpose in pseudonymised form. Wording is a task for the owners (section 6).
+- The proxy sees the raw IP in transit, as any internet service does. The proxy access log does not record it by default.
+- The HMAC subjects cannot be linked to nicknames, games or players: player buckets use the player id and IP buckets use only the IP, in separate rows.
+
+**Retention.** A row is deleted by cleanup once it has been idle for an hour, so a row lives at most about two hours after its last request (one hour idle plus up to one cleanup interval). Rows exist only for addresses that sent requests in that period. `rate_limits` is excluded from database backups (CH-2), so no HMAC is retained beyond live data. After a restore the table is truncated.
+
+**Key management.**
+- A separate 32-byte secret (`duocode_ratelimit_key`), distinct from the code key ring, mounted as a Docker secret in `app` only, generated with `deno task keys:generate --type ratelimit`.
+- It is not backed up (CH-2): losing it only resets the counters, because all buckets are rebuilt on the next requests.
+- Rotation (planned or on suspected compromise): replace the secret and restart the application. All old rows become unmatched and are deleted within about two hours. No migration and no data re-keying are needed. During the changeover buckets restart full, a brief and harmless relaxation.
+- Compromise response: rotate as above. Because the table holds only an hour of data and is excluded from backups, the exposure from a leaked key plus a stolen live database is limited to the addresses active in the last hours.
+- Without the key, the table gives an attacker nothing useful. With the key and a copy of the table, active addresses can be confirmed.
+
 ## 7. Review checklist for owners (gate 1.5)
 
 1. Confirm the lost-token limitation wording (section 2.1).
-2. Review the rotation implications table (section 2.2) and RD-3 (window, capability revocation).
-3. Review the ND-7 assessment (section 3.1), in particular the plaintext feedback counts and the keyed fingerprints (RD-8).
+2. Review the rotation implications table (section 2.2): UUIDv4 key, no reactivation of the old token, loss of the replacement token after the window, RD-11 (decrypted replacement token in the replay response, approved with its five conditions) and RD-12 (rotation revokes the unused rematch capability, approved).
+3. Review the ND-7 assessment (section 3.1), the serialisation exceptions (section 3.5), and the nonce thresholds with the durable reservation counter and the restore rule (section 3.3a, RD-10, RD-13, all approved).
 4. Review key management, backup, recovery, rotation, retirement and compromise procedures (sections 3.6 to 3.9) and `deployment.md` sections 5 and 6.
 5. Review the log and metrics rules (section 4).
 6. Review the threat table, especially T5, T12, T13, T21, T26, T30.
-7. Confirm RD-7 (restore reverts credential state) and RD-9 (IP handling).
+7. Confirm the IP handling documentation (section 6.2, RD-9) and the accepted operational risk of no point-in-time recovery (RD-7, reassess before production).
 
 ## 8. Residual risks summary
 
@@ -290,4 +359,6 @@ Mechanisms:
 - A database writer can alter plaintext state columns.
 - Lost tokens are lost seats. First rotator wins.
 - Rotation replay window exposes the new token, encrypted, for up to 10 minutes plus one cleanup interval.
-- Deleted data lives in backups for up to 35 days. A restore revives deleted data and rolled-back tokens until cleanup and procedures run.
+- Deleted data lives in backups for up to 35 days. A restore revives deleted data and rolled-back tokens until cleanup and procedures run. No point-in-time recovery in MVP 1 (RD-7).
+- Losing the replacement token of a rotation after the replay window loses the seat.
+- Pseudonymised IP HMACs exist for up to about two hours, and a leaked HMAC key plus a database copy allows confirming addresses.

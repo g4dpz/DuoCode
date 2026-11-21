@@ -1,4 +1,4 @@
-# DuoCode Simulator Design
+# DuoCode Simulator Design (revision 3.1, final for gate review)
 
 Owns: simulator behaviour, options, determinism, strategies, checks, reports. Related: `requirements.md` (R15, R5, R8, R20), `test-strategy.md` (TS-SIM), `test-strategy.md` (CI jobs), `../../../openapi/openapi.yaml` (the only interface used), `state-machine.md` (expected transitions).
 
@@ -8,7 +8,8 @@ Location: `tools/simulator/`. Run with `deno task simulate`.
 
 - Uses only the public REST API through `tools/api-client`. It never touches the database, services or persistence, and never bypasses validation (R15, SIM-006).
 - Imports from the backend are limited to type definitions of the wire contract and the reference feedback implementation in `backend/tests/reference/`. The simulator does not import `src/engine`, so it can detect engine errors.
-- Test deployments raise the per-IP rate limits (the simulator uses one address), but credential limits stay on so that retry and backoff paths are exercised.
+- Because deterministic keys are predictable, the simulator refuses to start unless the operator passes `--test-deployment`, and prints a warning that the target must not be a production system.
+- Test deployments raise the per-IP rate limits (the simulator uses one address), but player limits stay on so that retry and backoff paths are exercised.
 - Credentials are held in memory per game, one set per player, never printed and never written to reports or replay files (R13.2).
 - `Math.random` is banned in the simulator. All randomness comes from a seeded generator.
 
@@ -31,6 +32,7 @@ deno task simulate --replay 12345:417 --base-url …
 | `--seed` | required for CI, random otherwise (printed) | Master seed |
 | `--strategy` | `mixed` | Strategy for both players, or a mix chosen per game from the seed |
 | `--retry-rate` | 0 | Probability that a guess request is sent a second time with the same key (duplicate), also sometimes concurrently |
+| `--test-deployment` | off, required | Acknowledges that the target is a test deployment, because rotation keys are deterministic and predictable (CH-5) |
 | `--rotate-rate` | 0 | Probability a player rotates their access token between moves |
 | `--lost-rotation-rate` | 0 | Of the rotations, the probability that the response is discarded and the rotation is retried with the old token and the same key |
 | `--max-429-retries` | 5 | Retries with `Retry-After` backoff before a rate-limit denial counts as a failure |
@@ -50,17 +52,17 @@ The exact command-line interface is finalised during implementation (baseline 9.
 
 Per game number `n`:
 
-1. Player A creates a game. Record `accessToken`, `invitationToken`.
+1. Player A creates a game with a nickname chosen from a seeded set that includes right-to-left, mixed-direction and joiner text. Record `accessToken`, `invitationToken`. Verify the nickname comes back byte for byte and the response carries the JSON content type and `nosniff`. Occasionally also send a nickname containing a bidirectional control (U+202E for example) and expect `INVALID_NICKNAME` with nothing created (CH-1, R1.5).
 2. Player B joins with the invitation. Record the second token. Check the invitation cannot be reused (an occasional negative check).
 3. Both players submit secret codes, order chosen by the generator. Check the game is `ACTIVE` only after both codes exist, and that responses never contain a code.
 4. Interleave moves until both players are finished. For each move the strategy produces a guess. Send with a fresh `Idempotency-Key`.
    - With probability `retry-rate`, resend the same request with the same key and body, sometimes in parallel. Expect the identical response with `Idempotent-Replay: true` and no change in guess count.
    - Occasionally send the same key with a different body. Expect `409 IDEMPOTENCY_CONFLICT` and no change.
-   - With probability `rotate-rate`, rotate the player's token using a fresh `Idempotency-Key`, persist the old token and the key first, and verify the old token then returns `401` for every operation and the new token works.
-   - With probability `lost-rotation-rate`, discard the rotation response and retry with the old token and the same key. Expect the same new token and `Idempotent-Replay: true`. Also verify that a retry with a different key returns `401`, and that a retry after the replay window (test deployments use a short `ROTATION_REPLAY_SECONDS`) returns `401`.
+   - With probability `rotate-rate`, rotate the player's token using a fresh version 4 `Idempotency-Key` (**deterministic**, CH-5, R15.5: `key = uuidv4(first 16 bytes of HMAC-SHA-256(simulatorKey, "rotation" || seed || gameNumber || seat || rotationIndex))` with the version nibble set to 4 and the variant bits to `10`, where `simulatorKey` derives from the seed. The same game always produces the same keys, which makes replays exact. Such keys are predictable by design and are for test deployments only. Real clients must generate rotation keys from a cryptographically secure source, R8.13), persist the old token and the key first, and verify the old token then returns `401` for every operation and the new token works.
+   - With probability `lost-rotation-rate`, discard the rotation response and retry with the old token and the same key. Expect the same new token and `Idempotent-Replay: true`. After a replay, verify the old token still fails every other operation (a replay never reactivates it). Also verify that a retry with a different key returns `401`, that a rotation key that is not a version 4 UUID is rejected with `INVALID_IDEMPOTENCY_KEY`, and that a retry after the replay window (test deployments use a short `ROTATION_REPLAY_SECONDS`) returns `401`.
 5. After each response, fetch status and progress and check consistency.
 6. When both are finished, fetch results. Check outcome, codes and guesses.
-7. Optionally (low probability) request a rematch with capability, and verify new credentials and that old tokens do not work on the new game. The simulator then stops following the rematch.
+7. Optionally (low probability) request a rematch with capability, and verify new credentials and that old tokens do not work on the new game. Then verify that minting a second capability and creating a second rematch return `REMATCH_ALREADY_CREATED` (one rematch ever, RD-6). The simulator then stops following the rematch.
 
 ## 5. Strategies (SIM-005)
 

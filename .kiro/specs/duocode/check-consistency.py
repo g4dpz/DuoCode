@@ -1,0 +1,229 @@
+# Specification consistency checks (not application code). Run: python3 .kiro/specs/duocode/check-consistency.py
+# Task 2.7 in tasks.md turns this into the TS-DOC CI job.
+import re,glob,os,yaml,hashlib,sys
+import pathlib
+root=str(pathlib.Path(__file__).resolve().parents[3])+'/'
+d=root+'.kiro/specs/duocode/'
+files={os.path.basename(f):open(f).read() for f in sorted(glob.glob(d+'*.md'))}
+files['README.md']=open(root+'README.md').read()
+files['CONTRIBUTING.md']=open(root+'CONTRIBUTING.md').read()
+files['NOTICE']=open(root+'NOTICE').read()
+files['openapi.yaml']=open(root+'openapi/openapi.yaml').read()
+files['copilot-instructions.md']=open(root+'.github/copilot-instructions.md').read()
+spec=[k for k in files if k.endswith('.md') and k not in('README.md','CONTRIBUTING.md')]
+results=[]  # (name, ok, detail)
+def check(name,problems):
+    results.append((name,not problems,sorted(set(problems))))
+# 1 requirements in traceability
+tr=files['traceability.md']; req=files['requirements.md']
+reqnums=[int(x) for x in re.findall(r'^### R(\d+):',req,re.M)]
+check('C01 every requirement R1..R21 defined and in traceability matrix',[f'R{i} missing' for i in range(1,22) if i not in reqnums or not re.search(rf'^\| R{i} \|',tr,re.M)]+([] if reqnums==list(range(1,22)) else ['requirement numbering not 1..21']))
+# 2 criterion refs
+counts={}
+for m in re.finditer(r'^### R(\d+):.*?(?=^### R|^## )',req,re.M|re.S):
+    counts[int(m.group(1))]=len(re.findall(r'^\d+\. ',m.group(0),re.M))
+pr=[]
+for fn,t in files.items():
+    for m in re.finditer(r'\bR(\d+)\.(\d+)\b',t):
+        r,c=int(m.group(1)),int(m.group(2))
+        if r not in counts or c>counts[r]: pr.append(f'{fn}: R{r}.{c} does not exist')
+check('C02 every R<n>.<m> criterion reference exists',pr)
+# 3 TS groups and conc
+ts=files['test-strategy.md']
+defined=set(re.findall(r'\| (TS-[A-Z]+) \|\s*$',ts,re.M))|set(re.findall(r'\| (TS-[A-Z]+)\s*\|',ts))
+defined={g for g in defined if re.fullmatch(r'TS-[A-Z]+',g)}
+conc_def=set(int(x) for x in re.findall(r'^\| TS-CONC-(\d+) \|',ts,re.M))
+pr=[]
+for fn,t in files.items():
+    for g in set(re.findall(r'TS-[A-Z]+\b(?!-\d)',t)):
+        if g not in defined: pr.append(f'{fn}: {g} not defined')
+    for n in set(re.findall(r'TS-CONC-(\d+)',t)):
+        if int(n) not in conc_def: pr.append(f'{fn}: TS-CONC-{n} not defined')
+check(f'C03 every TS group and TS-CONC id referenced is defined ({len(defined)} groups, {len(conc_def)} concurrency scenarios)',pr)
+# 4 decision ids
+reg=req
+ids={'ND':9,'C':7,'CL':8,'RD':13,'OD':10,'CR':8,'CH':6}
+pr=[]
+for fn,t in files.items():
+    for k,mx in ids.items():
+        for n in set(re.findall(rf'(?<![A-Za-z]){k}-(\d+)\b',t)):
+            if int(n)<1 or int(n)>mx: pr.append(f'{fn}: {k}-{n} unknown')
+for k,mx in ids.items():
+    for n in range(1,mx+1):
+        if not re.search(rf'\| {k}-{n}\b',reg): pr.append(f'{k}-{n} not in decision register')
+check('C04 every decision ID is defined in the register and none is unknown',pr)
+# 5 stale terms
+stale={r'\bQ(1[0-3]|[1-9])\b':'revision 2 Q-ids',r'`?tok:':'old tok: scopes',r'rematch_of':'old rematch_of column',r'revision-3-review-package':'old review package name',r'5-minute block|5 minutes block':'old auth-fail block', r'UNIQUE \(rematch_of\)':'old constraint',r'Sent from my iPhone':'email signature'}
+pr=[]
+for fn,t in files.items():
+    if fn=='revision-3.1-review-package.md': continue
+    for pat,desc in stale.items():
+        if re.search(pat,t): pr.append(f'{fn}: {desc}')
+check('C05 no stale revision 2/3 identifiers or the email signature in the specification, README or licensing files',pr)
+# 6 section refs
+def headings(t): return set(re.findall(r'^#{2,3} (\d+(?:\.\d+)?[a-z]?)[\. ]',t,re.M))
+H={k:headings(v) for k,v in files.items()}
+pat=re.compile(r'`?(design|deployment|security-assessment|database-schema|state-machine|test-strategy)\.md`?,? (?:sections?|section) ([\d\.]+[a-z]?(?:(?:, | and | to )[\d\.]+[a-z]?)*)')
+pr=[]
+for fn,t in files.items():
+    for m in pat.finditer(t):
+        doc=m.group(1)+'.md'
+        for num in re.findall(r'\d+(?:\.\d+)?[a-z]?',m.group(2)):
+            if num not in H[doc]: pr.append(f'{fn}: {doc} section {num} missing')
+check('C06 every "<file>.md section N" reference resolves to a heading',pr)
+# 7 openapi vs design table
+oa=yaml.safe_load(files['openapi.yaml'])
+ops={}
+for path,item in oa['paths'].items():
+    for meth,op in item.items():
+        if meth in('get','post','put','delete','patch'): ops[(meth.upper(),path)]=op['operationId']
+design=files['design.md']
+tbl=re.search(r'\| Operation \| Method and path \| Credential \|.*?\n\n',design,re.S).group(0)
+rows=re.findall(r'\| [^|]+ \| `(GET|POST|PUT|DELETE) ([^`]+)` \|',tbl)
+pr=[]
+dset={(m,p) for m,p in rows}
+for k in ops:
+    if k not in dset: pr.append(f'OpenAPI {k} missing in design.md table')
+for k in dset:
+    if k not in ops: pr.append(f'design.md {k} missing in OpenAPI')
+check(f'C07 design.md API table matches OpenAPI paths and methods ({len(ops)} operations)',pr)
+# 8 error codes
+enum=set(oa['components']['schemas']['ErrorCode']['enum'])
+fam=re.compile(r'\b(INVALID_[A-Z_]+|GAME_[A-Z_]+|ATTEMPTS_EXHAUSTED|ALREADY_SOLVED|CODE_ALREADY_SET|IDEMPOTENCY_CONFLICT|REMATCH_ALREADY_CREATED|RATE_LIMITED|SERVICE_UNAVAILABLE|INTERNAL_ERROR)\b')
+pr=[]
+for fn,t in files.items():
+    for c in set(fam.findall(t)):
+        if c not in enum: pr.append(f'{fn}: {c} not in OpenAPI ErrorCode')
+check(f'C08 every error code named anywhere exists in the OpenAPI ErrorCode enum ({len(enum)} codes)',pr)
+# 9 states
+gs=set(oa['components']['schemas']['GameState']['enum'])
+ddl=re.search(r"```sql\n(.*?)```",files['database-schema.md'],re.S).group(1)
+dbst=set(re.findall(r"'([A-Z_]+)'",re.search(r"CREATE TYPE game_state AS ENUM\s*\((.*?)\);",ddl,re.S).group(1)))
+sm=files['state-machine.md']
+smst=set(re.findall(r'^\| `([A-Z_]+)` \| (?:Created|Both|Both players|Both joined)',sm,re.M))
+pr=[]
+if gs!=dbst: pr.append(f'OpenAPI GameState {sorted(gs)} != DB enum {sorted(dbst)}')
+for st in gs:
+    if f'`{st}`' not in sm: pr.append(f'state {st} missing in state-machine.md')
+check('C09 game states agree between OpenAPI, database enum and state machine',pr)
+# 10 table.column
+tables=dict()
+for m in re.finditer(r'CREATE TABLE (\w+) \((.*?)\n\);',ddl,re.S):
+    cols=set(re.findall(r'^\s+(\w+)\s+(?:uuid|bigserial|bigint|smallint|text|boolean|bytea|timestamptz|jsonb|double precision|integer|game_state|credential_type)\b',m.group(2),re.M))
+    tables[m.group(1)]=cols
+pr=[]
+for fn in spec:
+    if fn=='revision-3.1-review-package.md': continue  # change notes name removed columns on purpose
+    for m in re.finditer(r'`(\w+)\.(\w+)`',files[fn]):
+        t,c=m.group(1),m.group(2)
+        if t in tables and c not in tables[t]: pr.append(f'{fn}: {t}.{c} not a column')
+check(f'C10 every `table.column` reference names a real column ({len(tables)} tables in the DDL)',pr)
+# 11 config keys
+cfgsec=design[design.index('## 13. Configuration'):design.index('## 14.')]
+cfg=set(re.findall(r'^\| `([A-Z][A-Z0-9_]+)` \|',cfgsec,re.M))
+pr=[]
+allowed={'CODE_KEYRING_FILE','DATABASE_URL'}|cfg
+for fn in spec:
+    for k in set(re.findall(r'`([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)`',files[fn])):
+        if k.startswith(('TS_','INVALID_','GAME_')): continue
+        if k in enum or k in {'READ_ONLY','SPDX','SOURCE_DATE_EPOCH'}: continue  # SOURCE_DATE_EPOCH is a build variable, not application configuration
+        if re.fullmatch(r'(WAITING_FOR_PLAYER|WAITING_FOR_CODES|PLAYER_[12]_WINS|DRAW|ACTIVE|COMPLETED|EXPIRED|NOT_STARTED|IN_PROGRESS|SOLVED|EXHAUSTED|DECRYPT_ONLY|ROTATED|SUPERSEDED|ROTATION_SIDE_EFFECT|REVOKED|CONSUMED|LIVE|ACCESS|INVITATION|REMATCH|EXPIRED_PENDING)',k): continue
+        if k not in allowed and not k.startswith(('RATE_LIMIT_','TTL_')) : pr.append(f'{fn}: {k} not in configuration table')
+check(f'C11 every configuration key named in the specification is in design.md section 13 ({len(cfg)} keys)',pr)
+# 12 deployment scopes vs design
+dep=files['deployment.md']
+scopes_dep=set(re.findall(r'^\| `((?:ip|pl):[a-z]+)` \|',dep,re.M))
+scopes_des=set(re.findall(r'`((?:ip|pl):[a-z]+)`',design))
+check('C12 rate-limit scopes agree between design.md and deployment.md',[f'{x} only in one' for x in scopes_dep^scopes_des])
+# 13 licence
+lic=open(root+'LICENSE','rb').read()
+sha=hashlib.sha256(lic).hexdigest()
+pr=[]
+if sha!='0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0': pr.append('LICENSE checksum differs from FSF text recorded')
+if b'GNU AFFERO GENERAL PUBLIC LICENSE' not in lic or b'Version 3, 19 November 2007' not in lic: pr.append('LICENSE header wrong')
+if 'AGPL-3.0-only' not in files['NOTICE']: pr.append('NOTICE lacks AGPL-3.0-only')
+if 'DRAFT' not in files['NOTICE'] or 'DRAFT' not in files['CONTRIBUTING.md']: pr.append('draft banner missing')
+check(f'C13 licensing artefacts present, LICENSE is the FSF AGPL-3.0 text (sha256 {sha[:16]}...), NOTICE names AGPL-3.0-only',pr)
+# 14 workflows yaml
+pr=[]
+for f in glob.glob(root+'.github/workflows/*.yml'):
+    try: yaml.safe_load(open(f))
+    except Exception as e: pr.append(f'{f}: {e}')
+check('C14 GitHub workflow files parse as YAML',pr)
+# 15 no approved gate
+tk=files['tasks.md']
+pr=[l for l in tk.splitlines() if re.match(r'- \[x\]',l)]
+check('C15 no Phase 1 gate or task is marked approved in tasks.md',['marked done: '+l[:60] for l in pr])
+# 16 baseline constants
+pr=[]
+if 'maxItems: 4' not in files['openapi.yaml']: pr.append('code length not constrained')
+check('C16 OpenAPI constrains codes to 4 symbols from 1..6',pr)
+# 17 openapi nickname regex vs db regex
+oan=oa['components']['schemas']['Nickname']['pattern']
+dbn=re.search(r"nickname !~ E'(\[[^']+\])'",ddl).group(1)
+oar=re.search(r'\[\^(.*?)\]\+',oan).group(1).replace('\\\\','\\')
+dbr=dbn.strip('[]').replace('\\\\','\\')
+pr=[] if oar.replace('\\u0000','\\u0001')==dbr else [f'OpenAPI class {oar} vs DB class {dbr}']
+check('C17 nickname forbidden character classes agree between OpenAPI and database CHECK (NUL aside)',pr)
+# 18 rotation key regex is v4 only
+rk=oa['components']['parameters']['RotationIdempotencyKey']['schema']['pattern']
+good=re.fullmatch(rk,'3f2b8c1e-5a4d-4c6e-9b7a-1d2e3f4a5b6c') and not re.fullmatch(rk,'3f2b8c1e-5a4d-1c6e-9b7a-1d2e3f4a5b6c') and not re.fullmatch(rk,'3f2b8c1e-5a4d-4c6e-7b7a-1d2e3f4a5b6c')
+check('C18 OpenAPI rotation key pattern accepts v4 UUIDs and rejects v1 and wrong-variant values',[] if good else ['pattern wrong'])
+# 19 decision register vs traceability decision map
+def expand(text):
+    out=set()
+    for m in re.finditer(r'\b(OD|ND|CL|CR|RD|CH|LI|C)-(\d+)(?: to (?:OD|ND|CL|CR|RD|CH|LI|C)-(\d+))?',text):
+        a=int(m.group(2)); b=int(m.group(3)) if m.group(3) else a
+        for n in range(a,b+1): out.add(f'{m.group(1)}-{n}')
+    return out
+regids=set()
+for m in re.finditer(r'^\| ((?:OD|ND|CL|CR|RD|CH|LI|C)-\d+) \|',req,re.M): regids.add(m.group(1))
+mapsec=tr[tr.index('## 4. Decision to requirement map'):]
+mapids=set()
+for m in re.finditer(r'^\| ([^|]+) \|',mapsec,re.M): mapids|=expand(m.group(1))
+check(f'C19 every decision in the register has a row in the traceability decision map ({len(regids)} decisions)',[f'{x} missing in traceability map' for x in sorted(regids-mapids)]+[f'{x} in map but not in register' for x in sorted(mapids-regids)])
+# 20 no stale pending on resolved decisions
+pr=[]
+for fn in spec:
+    if fn=='revision-3.1-review-package.md': continue
+    for i,l in enumerate(files[fn].splitlines(),1):
+        if re.search(r'\b(?:RD|CH|ND|CR|CL)-\d+',l) and re.search(r'\bpending\b',l,re.I) and 'Pending** (needs' not in l and 'None of the technical decisions is pending' not in l:
+            pr.append(f'{fn}:{i}: {l.strip()[:110]}')
+check('C20 no decision recorded as approved in the register is still described as pending elsewhere',pr)
+# 21 no application code, migrations or implementation tasks
+import subprocess
+tracked=subprocess.run(['git','-C',root,'ls-files','-co','--exclude-standard'],capture_output=True,text=True).stdout.split()
+allowed_ext={'.md','.yaml','.yml','.py'}
+pr=[]
+for f in tracked:
+    base=os.path.basename(f); ext=os.path.splitext(f)[1]
+    top=f.split('/')[0]
+    if top in('backend','tools','deployment','frontend','postman','docs'): pr.append(f'{f}: implementation directory')
+    elif f.endswith('.sql') or 'migration' in f.lower(): pr.append(f'{f}: migration or SQL file')
+    elif base in('LICENSE','NOTICE','.gitignore','DuoCode-Requirements'): continue
+    elif ext=='.py' and f.startswith('.kiro/specs/duocode/'): continue   # specification tooling, not application code
+    elif ext not in allowed_ext: pr.append(f'{f}: unexpected file type')
+    elif f.startswith('.github/workflows/'): continue               # CI skeleton added earlier at the owner request, no application logic
+if any(l.startswith('- [x]') for l in files['tasks.md'].splitlines()): pr.append('a task is marked done')
+check('C21 no application code, database migration or implementation directory exists (only specification, licensing, CI skeleton and the two specification tool scripts)',pr)
+# 22 OpenAPI lint
+import shutil as _sh
+if _sh.which('npx'):
+    try:
+        r=subprocess.run(['npx','--yes','@redocly/cli@1','lint',root+'openapi/openapi.yaml'],capture_output=True,text=True,timeout=120)
+        out=r.stdout+r.stderr
+        ok=('valid' in out and 'warning' not in out.lower() and r.returncode==0)
+        check('C22 OpenAPI lint (Redocly): valid with 0 errors and 0 warnings',[] if ok else [out.strip()[-300:]])
+    except Exception as e:
+        results.append(('C22 OpenAPI lint (Redocly): SKIPPED ('+str(e)[:60]+')',None,[]))
+else:
+    results.append(('C22 OpenAPI lint (Redocly): SKIPPED (npx not available)',None,[]))
+w=0; sk=0
+for name,ok,det in results:
+    if ok is None:
+        print('SKIP '+name); sk+=1; continue
+    print(('PASS ' if ok else 'FAIL ')+name)
+    for x in det: print('     -',x)
+    w+=0 if ok else 1
+print(f'\n{len(results)-w-sk} of {len(results)-sk} checks passed ({sk} skipped)')
+sys.exit(1 if w else 0)

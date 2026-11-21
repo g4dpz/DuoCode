@@ -365,7 +365,7 @@ Any dual-licensing arrangement will depend on the project having the necessary r
 
 The AGPL licence does not grant rights to the DuoCode name, logo or other project branding.
 
-The full AGPL licence text must be included in the repository’s LICENSE file before public release.
+The full AGPL licence text is in the repository’s LICENSE file. The LICENSE, NOTICE and CONTRIBUTING.md files are proposals awaiting owner review, and external contributions are not accepted until the contribution terms are approved.
 
 Contributing
 
@@ -395,6 +395,3 @@ Project principle
 Keep the game simple, the architecture clean and the implementation thoroughly tested.
 
 DuoCode should be easy to play, straightforward to operate and flexible enough to grow beyond its initial two-player game.
-
-
-Sent from my iPhone

@@ -1,8 +1,8 @@
-# DuoCode Database Schema and Migrations
+# DuoCode Database Schema and Migrations (revision 3.1)
 
 Owns: tables, constraints, indexes, migration strategy, retention clock rules, cleanup SQL, rate-limit statement. Related: `requirements.md` (R5, R8 to R11, R20), `design.md` (credential model, authorisation point, lock ordering), `state-machine.md` (states and transitions), `security-assessment.md` (encryption), `deployment.md` (backup and restore).
 
-PostgreSQL is the authoritative store. Tables below are the logical model. Final DDL is written in `backend/migrations/0001_init.sql` during implementation and must match this file. The DDL below was syntax-checked against PostgreSQL 15 in a scratch database during specification review. Behavioural tests are required in implementation (`test-strategy.md`, group TS-DB).
+PostgreSQL is the authoritative store. Tables below are the logical model. Final DDL is written in `backend/migrations/0001_init.sql` during implementation and must match this file. The DDL below was applied and constraint-tested against a scratch PostgreSQL database during specification review (versions and results in `revision-3.1-review-package.md`). Behavioural tests are required in implementation (`test-strategy.md`, group TS-DB).
 
 ## 1. Entities
 
@@ -14,9 +14,10 @@ games 1 ──< players 1 ── 0..1 secret_codes        (encrypted)
   |             └──< token_rotations                    (encrypted replay copy of new token)
   ├──< credentials (INVITATION; REMATCH of this original game)
   ├── 0..1 game_results
-  └── 0..1 games (rematch_of, cleared when the original is deleted)
+  └── 0..1 rematch_markers (original_game_id) ── 0..1 games (the rematch, link cleared when it is deleted)
 
 rate_limits (independent, shared by all instances)
+key_usage   (independent, counts encryptions per key)
 ```
 
 ## 2. DDL
@@ -31,13 +32,11 @@ CREATE TYPE credential_type AS ENUM ('ACCESS','INVITATION','REMATCH');
 CREATE TABLE games (
   id            uuid PRIMARY KEY,                       -- crypto.randomUUID(); identifier, not a credential
   state         game_state NOT NULL,
-  rematch_of    uuid UNIQUE REFERENCES games(id) ON DELETE SET NULL,   -- at most one existing rematch per game
   config        jsonb NOT NULL,                         -- {positions, symbols, maxGuesses} at creation
   created_at    timestamptz NOT NULL DEFAULT now(),
   completed_at  timestamptz,
   expires_at    timestamptz NOT NULL,                   -- retention clock, rules in section 5
-  CHECK ((state = 'COMPLETED') = (completed_at IS NOT NULL)),
-  CHECK (rematch_of IS NULL OR rematch_of <> id)
+  CHECK ((state = 'COMPLETED') = (completed_at IS NOT NULL))
 );
 CREATE INDEX games_expires_idx ON games (expires_at);
 
@@ -47,7 +46,7 @@ CREATE TABLE players (
   seat          smallint NOT NULL CHECK (seat IN (1,2)),
   nickname      text NOT NULL
                 CHECK (char_length(nickname) BETWEEN 1 AND 24)             -- code points (UTF-8 database)
-                CHECK (nickname !~ E'[\\u0001-\\u001F\\u007F-\\u009F]'),    -- no Cc characters (NUL cannot occur in text)
+                CHECK (nickname !~ E'[\\u0001-\\u001F\\u007F-\\u009F\\u202A-\\u202E\\u2066-\\u2069]'),  -- no Cc, no bidi embedding/override/isolate (NUL cannot occur in text)
   guesses_used  smallint NOT NULL DEFAULT 0 CHECK (guesses_used BETWEEN 0 AND 10),
   solved        boolean NOT NULL DEFAULT false,
   finished_at   timestamptz,
@@ -136,6 +135,13 @@ CREATE TABLE token_rotations (                          -- rotation idempotency 
   CHECK ((token_ciphertext IS NULL) = (token_key_id IS NULL))
 );
 
+CREATE TABLE rematch_markers (                          -- at most one rematch EVER per original game (RD-6)
+  original_game_id uuid PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,       -- lives and dies with the original
+  rematch_game_id  uuid UNIQUE REFERENCES games(id) ON DELETE SET NULL,           -- cleared when the rematch is deleted. The row stays
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  CHECK (rematch_game_id IS NULL OR rematch_game_id <> original_game_id)
+);
+
 CREATE TABLE game_results (
   game_id       uuid PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,
   outcome       text NOT NULL CHECK (outcome IN ('PLAYER_1_WINS','PLAYER_2_WINS','DRAW')),
@@ -155,6 +161,13 @@ CREATE TABLE rate_limits (                              -- shared token buckets,
 );
 CREATE INDEX rate_limits_refilled_idx ON rate_limits (refilled_at);
 
+CREATE TABLE key_usage (                                  -- encryptions RESERVED per key, sharded to avoid a hot row (RD-10, RD-13)
+  key_id    smallint NOT NULL,
+  shard     smallint NOT NULL CHECK (shard BETWEEN 0 AND 31),
+  reserved  bigint NOT NULL DEFAULT 0 CHECK (reserved >= 0),   -- only ever increases. Over-counts, never under-counts
+  PRIMARY KEY (key_id, shard)
+);
+
 CREATE TABLE schema_migrations (
   version     integer PRIMARY KEY,
   name        text NOT NULL,
@@ -166,7 +179,8 @@ Notes:
 - Ciphertext columns are opaque to the database. Symbol range and length of codes and guesses are validated by the application before encryption and cannot be checked by constraints. This is the cost of ND-7.
 - `players.guesses_used` equals the count of that player's `guesses` rows. The service updates both in one transaction. A consistency test checks it.
 - The nickname constraints implement R1.3(c) and (d) as a backstop. Trimming and the other rules are application-level because PostgreSQL has no Unicode `White_Space` test.
-- `rematch_of` uses `ON DELETE SET NULL`. When an original game is deleted the rematch continues (R9.8).
+- The rematch marker is a separate row keyed by the original game. Its primary key is what makes "one rematch ever" a database rule (R9.4). Deleting the rematch game clears `rematch_game_id` and leaves the row, so the original can never have a second rematch. Deleting the original deletes the marker, and the rematch game, which has no foreign key to the original, continues as an ordinary game (R9.8). `rematchOf` in the API is derived by looking up the marker whose `rematch_game_id` equals the game.
+- `key_usage` counts **reservations**, not completed encryptions. An instance reserves a block of encryptions in its own short autocommit transaction, committed before it performs any encryption from that block, so the reservation can never be rolled back with an application transaction. The total for a key is the sum over its shards. Statement and properties in section 6.2. The shard rows are touched only by those autocommit statements (lock level L0 in `design.md` section 8.2).
 - Credentials of the original game (including the rematch capabilities) reference the original game and its players and are deleted with it. A rematch game has its own `players` and `credentials` rows. Nothing links its credentials to the original game (R9.3).
 - No credential record is kept after its game is deleted (R8.8).
 - Nonces and ciphertexts: every encryption uses a fresh random 96-bit nonce. See `security-assessment.md` section 3.
@@ -183,15 +197,16 @@ Notes:
 | `guesses_used` within range | `CHECK BETWEEN 0 AND 10` | Equality with the count of guess rows |
 | One key per guess, one guess per key | `idempotency_keys` primary key `(player_id, key)` and `UNIQUE (guess_id)` | Fingerprint comparison |
 | One rotation per key and per old token | `UNIQUE (player_id, idempotency_key)`, `UNIQUE (from_credential_id)` | Replay window and fingerprint |
-| At most one existing rematch per game | `UNIQUE (rematch_of)` | `REMATCH_ALREADY_CREATED` mapping |
+| At most one rematch ever per game, independent of the rematch game's lifetime | Primary key of `rematch_markers` (`original_game_id`), `UNIQUE (rematch_game_id)` | `REMATCH_ALREADY_CREATED` mapping, creation in the rematch transaction |
 | One live access token per player | Partial unique index | Atomic rotation |
 | One live rematch capability per player | Partial unique index | Revocation on mint and rotation |
 | One invitation per game | Partial unique index | Single-use consumption |
 | Credential belongs to a player of its own game | Composite foreign key `(player_id, game_id)` | |
 | Result at most once per game | `game_results` primary key | Result only for `COMPLETED` games |
 | Completed state has a completion time | `CHECK` on `games` | |
-| Nickname length and control characters | `CHECK` constraints | Trim, empty, malformed Unicode |
+| Nickname length, control characters, bidi embedding, override and isolate controls | `CHECK` constraints | Trim, empty, malformed Unicode |
 | Rate-limit bucket unique per subject | Primary key `(scope, subject)` | |
+| One counter row per key and shard, never negative | Primary key and `CHECK` of `key_usage` | Shard choice, monotonic increase (only the reservation statement writes), threshold policy |
 
 Not expressible as simple constraints and covered by service logic plus tests: a game is `ACTIVE` only with two players and two codes, a game is `COMPLETED` only when both players are finished, and `game_results` exists only for completed games.
 
@@ -232,7 +247,9 @@ Durations come from configuration (`design.md`, section 11). The reference time 
 
 Reads and polling do not extend the clock (ND-5). A completed game's clock never moves again.
 
-## 6. Rate limiting statement (R20)
+## 6. Rate limiting and key usage statements (R20, RD-13)
+
+### 6.1 Rate limiting statement (R20)
 
 A token bucket per `(scope, subject)`. `$cap` is capacity, `$refill` is tokens per second, `$now` is `clock_timestamp()`. One statement, atomic across instances.
 
@@ -250,10 +267,34 @@ RETURNING tokens;
 
 - A returned row means the request is allowed. No row means denied. The bucket is not changed on denial, so a client that keeps retrying is not penalised beyond the refill.
 - `Retry-After` is `ceil((1 - tokens) / $refill)` computed by a follow-up read of the bucket, or the application default when the read is skipped.
-- IP buckets run in their own short autocommit statement before anything else. Credential buckets run once inside the request transaction after the game lock (lock order in `design.md`, section 8).
-- Subjects: `HMAC-SHA-256(RATE_LIMIT_HMAC_KEY, ip)` for IP scopes and `SHA-256("rl" || token)` for credential scopes. No raw IP or token is stored (RD-9).
+- Every bucket update, IP or player, runs as its own short autocommit statement before the request transaction begins (CR-2, R20.9). No rate-limit row lock is ever held together with a game lock (`design.md` section 8.2).
+- Subjects: `HMAC-SHA-256(RATE_LIMIT_HMAC_KEY, ip)` for IP scopes and `SHA-256("rl" || player_id)` for player scopes (CH-4). The player id comes from the preliminary credential lookup, so no row is created for a token that does not exist. No raw IP or token is stored (RD-9).
 - Rows idle for more than an hour are deleted by cleanup (section 7). A bucket full again behaves like a new one.
 - Scope names and values are in `deployment.md`, section 4.
+
+### 6.2 Key usage reservation (RD-10, RD-13)
+
+An instance keeps an in-memory allowance per key id. Before it performs an encryption, the allowance must be positive, and each encryption invocation consumes one unit (whether or not the surrounding transaction later commits). An operation needing `n` encryptions makes sure `allowance >= n` **before its transaction begins**. When the allowance is too small the instance reserves a block of `KEY_USAGE_BLOCK` (default 1024) in a short, separate autocommit transaction:
+
+```sql
+BEGIN;
+INSERT INTO key_usage (key_id, shard, reserved)
+VALUES ($1, $2, $3)                                   -- $2 random shard 0..31, $3 block size
+ON CONFLICT (key_id, shard) DO UPDATE SET reserved = key_usage.reserved + EXCLUDED.reserved;
+SELECT sum(reserved) AS total FROM key_usage WHERE key_id = $1;
+COMMIT;
+```
+
+Rules:
+- The block is added to the allowance only after the transaction has committed and returned. If the outcome is unknown (connection lost), the instance treats the reservation as failed and does not use it. The counter may have gone up. That is an over-count, which is safe.
+- The returned `total` decides the policy: at or above the warning threshold the warning metric and log are raised, at or above the rotation threshold the key is reported as overdue for rotation (health shows degraded), and above the hard stop the instance discards the block and refuses to encrypt under that key (`503`). The counter stays high, so the refusal is permanent for that key.
+- Rolled-back or failed application transactions: the reservation was committed earlier on its own, so nothing is undone. Units consumed by encryptions in a failed transaction stay consumed.
+- Crash or restart: the unused part of an instance's allowance is lost. It was already counted, so the counter over-counts by at most `KEY_USAGE_BLOCK` per instance start per key.
+- Several instances: each reserves its own blocks. The `INSERT ... ON CONFLICT` increments are atomic, so no reservation is lost. Two instances can overshoot a threshold by at most one block each. Thresholds sit far below the cryptographic limit (`security-assessment.md` section 3.3a), so that is acceptable.
+- Never underestimates: the invariant is `sum(reserved) >= encryptions actually performed under the key`, for as long as the database content is not restored from an earlier state. After a restore it can fail, and that is why a restore activates a new key (`deployment.md` section 6.1, R10.13).
+- Contention: one reservation per `KEY_USAGE_BLOCK` encryptions, spread over 32 shards. Negligible at expected load.
+- `keys:verify` checks the invariant `rows under the key <= sum(reserved)` per key (every stored ciphertext was an encryption). A violation means the counter lost data and fails verification.
+- The reservation statements are issued on a separate connection from the request transaction, before it begins. They hold a shard row lock for one statement and never while waiting for any other lock (`design.md` section 8.2).
 
 ## 7. Cleanup
 
@@ -289,7 +330,7 @@ WHERE ctid IN (SELECT ctid FROM rate_limits
 Properties:
 - **Token invalidation.** Credentials are invalid from `expires_at` by the expiry rule (section 4), independent of cleanup. Deleting the game cascades to credentials. Afterwards presented tokens find no record and receive `401` (C-7). No credential records are retained.
 - **Deletion of secret codes, guesses and personal data.** The cascade removes `players` (nicknames), `secret_codes`, `guesses`, `idempotency_keys`, `token_rotations`, `credentials` and `game_results`.
-- **Rematch link.** The `ON DELETE SET NULL` action updates the rematch game's `rematch_of` (R9.8). That update needs a lock on the rematch game row. If a live request holds it, cleanup waits up to `lock_timeout` and the batch is retried later (`design.md`, section 8).
+- **Rematch marker.** Deleting an original game cascades to its marker row. Deleting a rematch game updates its marker row (`rematch_game_id` set to null) and leaves the marker, so a deleted rematch never frees the original for another one (R9.4, R9.8). The update needs a lock on the marker row. If another cleanup run holds it, the statement waits up to `lock_timeout` and the batch is retried later. Live requests never wait on it because they do not touch the marker of another game, and no lock cycle is possible (`design.md`, section 8.2).
 - **Repeatable.** Each run selects only rows still expired. A second run finds nothing new. A crash leaves either a deleted batch or an untouched batch, because each batch is one transaction.
 - **Concurrent with live traffic.** Live requests hold `FOR UPDATE` on the game row. `SKIP LOCKED` leaves in-flight games to a later run. A game refreshed between selection and deletion fails the re-check. Each live request decides expiry under its own lock, so a request cannot succeed on a game that cleanup could delete.
 - **Concurrent with itself.** Two runs lock disjoint rows because of `SKIP LOCKED`.
@@ -309,7 +350,8 @@ Backups retain deleted data until they age out (35 days maximum, R11.9). After a
 | Tokens | Credentials | SHA-256 hash only | Temporary ciphertext of a rotated token during the replay window (R8.13) |
 | Request fingerprints | Derived from guesses | HMAC keyed from the key ring | Plain hashes would be reversible (RD-8) |
 | Idempotency key and response | Operational | plaintext | Response holds no code and no guess |
-| Client IP addresses | Not stored by the application | rate-limit rows hold an HMAC only | Proxy logs hold none (`deployment.md`) |
+| Client IP addresses | Not stored by the application | `rate_limits` rows hold an HMAC only (pseudonymised personal data), deleted one hour after last use, excluded from backups (CH-2) | Proxy logs hold none (`deployment.md`). See `security-assessment.md` section 6.2 |
+| Encryption counts | Operational | `key_usage` counters per key id | No personal data |
 
 ## 9. Migration strategy
 

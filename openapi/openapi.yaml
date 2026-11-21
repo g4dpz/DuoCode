@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DuoCode API
-  version: 1.0.0-draft.3
+  version: 1.0.0-draft.5
   summary: Two-player asynchronous code-breaking game.
   description: |
     Draft contract for the DuoCode backend MVP. Requirements: `.kiro/specs/duocode/requirements.md`.
@@ -12,6 +12,7 @@ info:
     Each is accepted only where its type is expected. Tokens are shown once, in the response that issues them.
 
     **Lost tokens cannot be recovered.** DuoCode has no accounts and no verified identity.
+    This includes the replacement token of a rotation if its response is lost and the replay window has passed.
     Whoever holds a token is the player. If a token is lost, nobody, including the server operator,
     can restore access to that player's seat. Rotation (`rotateAccessToken`) needs the current token and
     is meant for a suspected leak, not for recovery.
@@ -19,7 +20,9 @@ info:
     **Secret codes** are never returned before the game is `COMPLETED`. Responses and error messages never
     echo submitted codes, guesses or tokens.
 
-    **Idempotency.** `submitGuess` and `rotateAccessToken` require an `Idempotency-Key`. See those operations.
+    **Idempotency.** `submitGuess` and `rotateAccessToken` require an `Idempotency-Key`. `submitGuess` accepts any UUID.
+    `rotateAccessToken` requires a version 4 (random) UUID from a cryptographically secure random source, because for
+    rotation the key is also a replay secret. See those operations.
     Request fingerprints are computed from the RFC 8785 canonical form of the request, so key order and whitespace
     in a body do not matter.
 
@@ -28,22 +31,37 @@ info:
     (joining with an invitation of a deleted game receives `404 INVALID_INVITATION`).
     A game is expired when the server time is greater than or equal to its retention end.
 
-    **Nicknames** are trimmed, must be 1 to 24 Unicode code points after trimming, and must not contain control characters.
+    **Display safety.** Nicknames are returned only as JSON strings with `Content-Type: application/json; charset=utf-8`
+    and `X-Content-Type-Options: nosniff`, never as HTML. Clients must escape them for their display context and show
+    them in an isolated bidirectional context (for example an HTML `<bdi>` element), so that mixed-direction names
+    cannot reorder neighbouring text.
+
+    **Nicknames** are trimmed, must be 1 to 24 Unicode code points after trimming, and must not contain control characters
+    or bidirectional embedding, override or isolate controls.
     The trimmed value is stored and returned unchanged. Duplicates are allowed.
 
-    **Rate limits.** Every endpoint can return `429 RATE_LIMITED` with `Retry-After`.
+    **Rate limits.** Per-IP and per-player limits are shared across all server instances. Every endpoint can return
+    `429 RATE_LIMITED` with `Retry-After`.
     If the shared rate-limit store is unavailable the server fails closed with `503`.
   license:
     name: AGPL-3.0-only
     identifier: AGPL-3.0-only
 servers:
-  - url: https://localhost/api/v1
-    description: Local deployment behind the reverse proxy
+  - url: https://{host}/api/v1
+    description: Public listener behind the reverse proxy. Replace the host with your deployment.
+    variables:
+      host:
+        default: localhost
+        description: Host name of the deployment.
 tags:
   - name: Games
+    description: Creating and joining games.
   - name: Play
+    description: Secret codes, guesses, progress and results.
   - name: Credentials
+    description: Rotation of the game access token.
   - name: Rematch
+    description: Rematch capability and rematch creation. One rematch ever per original game.
   - name: Operations
     description: Health, metrics and cleanup. Metrics and cleanup are served only on the internal admin listener.
 paths:
@@ -223,6 +241,9 @@ paths:
       tags: [Play]
       operationId: getProgress
       summary: Get the caller's own guesses and counts
+      description: |
+        Returns only the caller's own guesses with their feedback. This and `getResults` are the only operations that
+        return decrypted guesses. The opponent's guesses and feedback are never returned here.
       security: [{ accessToken: [] }]
       parameters:
         - $ref: '#/components/parameters/GameId'
@@ -242,7 +263,8 @@ paths:
       summary: Get final results
       description: |
         Available only when the game is `COMPLETED`. Reveals both secret codes, all guesses and the outcome.
-        Before completion the response is `422 GAME_NOT_COMPLETED` and no code or guess is decrypted or revealed.
+        The server verifies that the game is completed before it reads any stored code or guess. Before completion the
+        response is `422 GAME_NOT_COMPLETED` and no code or guess is read, decrypted or revealed.
         Results are readable with the player's **current** access token, including after any number of rotations.
         A token revoked by rotation cannot read results.
       security: [{ accessToken: [] }]
@@ -268,14 +290,25 @@ paths:
       operationId: rotateAccessToken
       summary: Replace the caller's access token (idempotent)
       description: |
-        Requires `Idempotency-Key` (UUID). In one transaction the server creates a new access token for the caller,
-        revokes the presented token and revokes the caller's unused rematch capability. After the commit the old token
-        authorises nothing, with the single exception below.
+        Requires `Idempotency-Key`, which must be a version 4 UUID generated from a cryptographically secure random source
+        (for example `crypto.randomUUID()`). Other UUID versions are rejected with `INVALID_IDEMPOTENCY_KEY`.
+        In one transaction the server creates a new access token for the caller, revokes the presented token and
+        revokes the caller's unused rematch capability. After the commit the old token authorises nothing, with the
+        single exception below.
 
         **Lost response.** If the response is lost, repeat the same request with the **old** token and the **same key**
-        within the replay window (10 minutes by default). The server returns the same new token again with
-        header `Idempotent-Replay: true` and changes nothing. After the window, or with a different key, the old token
-        receives `401 INVALID_CREDENTIALS` and the seat is lost. Store the old token and the key before sending.
+        within the replay window (10 minutes by default). The server returns the original response, the same new token,
+        with header `Idempotent-Replay: true`. A replay changes nothing: it does not restore, reactivate or un-revoke the old
+        token, which stays revoked for every other operation. After the window, or with a different key, the old token
+        receives `401 INVALID_CREDENTIALS`.
+
+        The replay is honoured only when all of these hold: the original, now revoked, token is presented; the original
+        key is presented; the request fingerprint matches; the window is still valid; and the replacement token has not
+        been revoked. Otherwise the response is `401` or `409` and nothing is decrypted. The replacement token never
+        appears in an error response, a log or a metric.
+
+        **If the replacement token is lost after the window has passed, the seat is lost.** Nobody, including the operator,
+        can recover it. Store the old token and the key before sending, and store the new token as soon as it arrives.
         Using the new token with the same key returns `409 IDEMPOTENCY_CONFLICT`.
 
         This is deliberate rotation and a bounded retry, not recovery: it needs the current token or the old token and the key.
@@ -283,7 +316,7 @@ paths:
       security: [{ accessToken: [] }]
       parameters:
         - $ref: '#/components/parameters/GameId'
-        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RotationIdempotencyKey'
       responses:
         '201':
           description: New token issued once, or replay of the original response.
@@ -311,7 +344,9 @@ paths:
       summary: Mint a rematch capability for a completed game
       description: |
         Creates a rematch capability for the caller and revokes the caller's previous unused capability
-        for this game. Rotating the caller's access token revokes an unused capability, so mint a new one afterwards. The capability authorises only `createRematch` and grants no read or play access.
+        for this game. Rotating the caller's access token revokes an unused capability, so mint a new one afterwards.
+        If a rematch has ever been created for this game, even one that has since expired or been deleted,
+        the response is `409 REMATCH_ALREADY_CREATED`. The capability authorises only `createRematch` and grants no read or play access.
       security: [{ accessToken: [] }]
       parameters:
         - $ref: '#/components/parameters/GameId'
@@ -322,6 +357,11 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/MintRematchCapabilityResponse' }
         '401': { $ref: '#/components/responses/InvalidCredentials' }
+        '409':
+          description: A rematch has already been created for this game at some time (`REMATCH_ALREADY_CREATED`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
         '410': { $ref: '#/components/responses/GameExpired' }
         '422':
           description: Game is not completed (`GAME_NOT_COMPLETED`).
@@ -338,7 +378,10 @@ paths:
         In one transaction, consumes the capability and creates a new game with entirely new credentials:
         a new access token for the requester (seat 1) and a new invitation token.
         Tokens of the original game do not work on the new game and the reverse.
-        At most one rematch exists per original game at a time. The requester shares `gameId` and `invitationToken`
+        At most one rematch is ever created per original game, even if that rematch later expires or is deleted.
+        On success, every unused rematch capability of the original game is revoked in the same transaction, so a
+        second player presenting one afterwards receives `401 INVALID_CREDENTIALS`. Check `rematchCreated` on the status
+        of the original game. The requester shares `gameId` and `invitationToken`
         with the opponent outside the API. The server never re-issues them.
       security: [{ rematchCapability: [] }]
       requestBody:
@@ -355,7 +398,7 @@ paths:
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/InvalidCredentials' }
         '409':
-          description: A rematch already exists for the original game (`REMATCH_ALREADY_CREATED`).
+          description: A rematch has already been created for the original game at some time (`REMATCH_ALREADY_CREATED`). A defensive backstop. Normally every capability was revoked when the rematch was created, and the response is `401`.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -377,6 +420,7 @@ paths:
                 required: [status]
                 properties:
                   status: { type: string, enum: [ok] }
+        '429': { $ref: '#/components/responses/RateLimited' }
         '503':
           description: Not ready.
           content:
@@ -456,8 +500,18 @@ components:
       name: Idempotency-Key
       in: header
       required: true
-      description: UUID in canonical text form, case-insensitive. Unique per player and operation. See `submitGuess` and `rotateAccessToken`.
+      description: UUID of any version in canonical text form, case-insensitive. Unique per player and operation. See `submitGuess`. Version 4 recommended.
       schema: { type: string, format: uuid }
+    RotationIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Version 4 UUID in canonical text form, case-insensitive, from a cryptographically secure random source.
+        For rotation it doubles as the replay secret. Unique per player and operation. Other versions are rejected.
+      schema:
+        type: string
+        pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
   responses:
     ValidationError:
       description: Request failed validation. Nothing was changed. The message never echoes request values.
@@ -504,10 +558,12 @@ components:
       type: string
       minLength: 1
       maxLength: 24
-      pattern: '^[^\u0000-\u001F\u007F-\u009F]+$'
+      pattern: '^[^\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]+$'
       description: |
         Display label. The server trims leading and trailing white space first, then requires 1 to 24 Unicode code points
-        and no control characters (category Cc). Malformed Unicode is rejected. The trimmed value is stored and returned
+        and no control characters (category Cc) and none of U+202A to U+202E and U+2066 to U+2069 (bidirectional
+        embedding, override and isolate controls). Malformed Unicode is rejected. Other Unicode, including directional
+        marks, joiners and emoji sequences, is accepted. The trimmed value is stored and returned
         unchanged. Duplicates are allowed. Violations return `INVALID_NICKNAME`.
     Symbol:
       type: integer
@@ -622,7 +678,7 @@ components:
             - $ref: '#/components/schemas/OpponentProgress'
             - type: 'null'
           description: Null until the opponent has joined.
-        rematchCreated: { type: boolean, description: True once a rematch exists. Never reveals its id or credentials. }
+        rematchCreated: { type: boolean, description: "True once a rematch has ever been created for this game, even if it has since expired or been deleted. Never reveals its id or credentials." }
         expiresAt: { type: string, format: date-time }
         completedAt: { type: [string, 'null'], format: date-time }
     GuessRecord:

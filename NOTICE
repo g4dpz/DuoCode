@@ -1,0 +1,28 @@
+DuoCode
+Copyright (C) 2026 [COPYRIGHT HOLDER 1: exact name to be provided by the owners]
+Copyright (C) 2026 [COPYRIGHT HOLDER 2: exact name to be provided by the owners]
+
+DRAFT FOR OWNER REVIEW (specification gate 6). The copyright holder lines above are
+placeholders. No name has been assumed. Remove this paragraph when the owners have
+supplied and approved the final names.
+
+This product is free software, licensed under the GNU Affero General Public License,
+version 3 only (SPDX-License-Identifier: AGPL-3.0-only). The full licence text is in the
+file LICENSE. Under section 13 of that licence, if you modify this software and let users
+interact with it remotely through a computer network, you must offer those users the
+corresponding source code of your modified version.
+
+The copyright holders may also offer this software under separate commercial licence
+terms. Nothing in this NOTICE or in the AGPL grants any such commercial rights.
+
+Names and branding: "DuoCode" is a working title. The name, logos and other branding of
+this project are not licensed under the AGPL. The AGPL grants no right to use them.
+
+Third-party components: none are included yet. A list of third-party components and their
+licences will be added to this file before the first release. It will include the
+components of the proxy build (Caddy and the rate-limit module, both Apache-2.0).
+
+Source files carry the header:
+
+    SPDX-License-Identifier: AGPL-3.0-only
+    Copyright (C) 2026 The DuoCode authors (see NOTICE)

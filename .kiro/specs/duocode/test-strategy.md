@@ -1,4 +1,4 @@
-# DuoCode Test Strategy (revision 3)
+# DuoCode Test Strategy (revision 3.1, final for gate review)
 
 Owns: test layers, required cases, test group IDs, CI jobs. Related: `requirements.md`, `traceability.md` (maps requirements to the group IDs below), `state-machine.md` (transition tables to cover), `database-schema.md`, `security-assessment.md` (threat IDs T1 to T32), `simulator-design.md`, `../../../openapi/openapi.yaml` (contract).
 
@@ -45,20 +45,30 @@ Nickname cases (applied to create, join and rematch, each expecting `INVALID_NIC
 - Empty string, white space only, and trimmed-empty values are rejected.
 - Exactly 24 code points accepted, 25 rejected. Counts are in code points: 24 emoji (each one code point, two UTF-16 units) accepted, 24 combining sequences counted by code point. A 24-character value of 4-byte characters is accepted (not counted in bytes).
 - Control characters rejected: U+0000, U+0009, U+000A, U+001F, U+007F, U+0080, U+009F. A value with only the control character after trimming is also rejected.
+- Bidirectional embedding, override and isolate controls rejected wherever they appear (start, middle, end): U+202A, U+202B, U+202C, U+202D, U+202E, U+2066, U+2067, U+2068, U+2069 (RD-5).
+- Legitimate Unicode accepted and preserved exactly: Arabic and Hebrew names including U+200F (RLM), U+200E (LRM) and U+061C (ALM), Persian text with U+200C (ZWNJ), emoji sequences with U+200D (ZWJ) such as a family emoji (counted per code point), combining marks, CJK, accented Latin in precomposed and decomposed form (CH-1).
 - Malformed Unicode (an unpaired surrogate in the JSON string) is rejected.
 - Accepted value is not normalised: a precomposed and a decomposed form are returned exactly as sent. No case folding.
 - Duplicate nicknames accepted: two players in the same game with the same nickname, and across games.
+- **Display-security tests (CH-1, R1.5).**
+  - Every route that returns a nickname (create, join, status, results, rematch) sends `Content-Type: application/json; charset=utf-8` and `X-Content-Type-Options: nosniff`, and the value is returned byte for byte as accepted.
+  - A nickname containing HTML (`<script>`, `<img onerror=…>`, `"`, `'`, `&`) is accepted as text (it is legitimate input) and returned unescaped inside the JSON string and never inside an HTML body. No endpoint returns `text/html`.
+  - Bidirectional controls cannot enter by any input path: raw UTF-8, JSON `\uXXXX` escapes for each of U+202A to U+202E and U+2066 to U+2069, escaped surrogate pairs, and values that become a forbidden code point only after trimming adjacent white space. Each is rejected with `INVALID_NICKNAME`.
+  - Legitimate right-to-left and mixed-direction text is accepted and unchanged (Arabic, Hebrew, Persian with ZWNJ, a Latin name inside Arabic text with LRM or RLM marks, ALM).
+  - Look-alike input that is not a control character (fullwidth Latin, Cyrillic homoglyphs) is accepted. It is not a control and is outside RD-5. The test documents this so the behaviour is deliberate.
+  - A client-side check in the Postman collection and `docs/API.md` shows the escape and `<bdi>` rule for display (documentation test, TS-DOC).
 - Error messages never contain the submitted nickname.
 - The database `CHECK` constraints reject over-long and control-character values inserted directly (backstop, TS-DB).
 
 Other validation: unknown body properties rejected, duplicate member names rejected with `INVALID_REQUEST`, malformed UUID path returns `INVALID_GAME_ID`, bodies over `HTTP_MAX_BODY_BYTES` rejected, wrong content type rejected.
+Rotation key validation (R8.13): a version 4 UUID is accepted in lower and upper case. Version 1, 3, 5 and 7 UUIDs, the nil UUID, a v4-looking string with a wrong variant, a UUID without hyphens and a non-UUID string are rejected with `INVALID_IDEMPOTENCY_KEY` before any state is read. The same values are accepted as guess keys except malformed ones (guess keys accept any version, R5.1).
 
 ## 4. TS-IDEM: idempotency and canonicalisation (R5)
 
 Guess idempotency:
 - Same key, same body, sequential: one guess stored, second response equals the first byte for byte, carries `Idempotent-Replay: true`, counts unchanged.
 - Same key, different body: `409 IDEMPOTENCY_CONFLICT`, nothing changed.
-- Same key by the other player, in another game, or on the rotation endpoint: independent, no conflict, no information leak.
+- Same key by the other player, in another game, or on the rotation endpoint: independent, no conflict, no information leak. A v4 UUID used once for a guess and once for a rotation by the same player creates two unrelated records.
 - Missing key, malformed key, uppercase UUID (accepted, same key as lowercase), non-UUID string (rejected): `INVALID_IDEMPOTENCY_KEY`, counts unchanged.
 - Rejected request (invalid guess, wrong state, attempts exhausted) stores no key. The same key can then be used for a corrected request.
 - Replay of the completing guess after the game is `COMPLETED`: original response returned.
@@ -85,6 +95,7 @@ Canonicalisation (R5.12):
 - Authorisation point: a code scan test asserts that no module outside `services/authorise` reads the `credentials` table for decisions, and that the HTTP layer performs no credential lookup (R8.11).
 - Write recheck: a write request that has passed validation and rate limiting before a rotation commits fails with `401` after it (forced interleaving with a barrier in the test).
 - Read snapshot: a read that began before a rotation commit finishes consistently (old token accepted for that read), and a read started after fails. Within one read, credential validity and the data cannot disagree (no half-updated view).
+- Read order (CR-2): a test double records the sequence for every authenticated read: preliminary lookup, rate-limit update(s), `BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ`, authorise as the first statement in that transaction, data reads. Any other order fails the test. The preliminary lookup result is never used to authorise: revoke the credential between the preliminary lookup and the transaction (forced interleaving) and assert `401`. A token not found by the preliminary lookup yields `401` without creating any `rate_limits` row and consumes `ip:authfail`.
 - Rotation: new token works, old token returns `401` afterwards. Rotation revokes an unused rematch capability of the same player. Rotation requires `Idempotency-Key`.
 - Rotation replay (R8.13):
   - Same old token, same key, inside the window: same new token, `Idempotent-Replay: true`, no state change, `expires_at` unchanged.
@@ -92,12 +103,19 @@ Canonicalisation (R5.12):
   - Wrong key, same old token: `401`. Different old token with same key: `409`.
   - After `ROTATION_REPLAY_SECONDS` (use a short test value): `401` even if the ciphertext is still stored. After cleanup the ciphertext is cleared.
   - Replay when the new token has itself been rotated away: `401`.
+  - Replay returns the original response byte for byte (body identical, status `201`, `Idempotent-Replay: true`).
+  - RD-11 conditions: the replacement token is returned only when all five hold. Test each failing in turn (wrong or absent old token, wrong key, a different fingerprint, a window that has passed, a replacement token revoked by a later rotation) and assert no decrypt call is made and the response is `401` or `409` with no token in it.
+  - Canary (RD-11): across the whole run, the replacement token never appears in any log line, diagnostic output, metric, trace or error body, in the first response or in a replay (TS-SEC).
+  - Rotation revokes the player's unused rematch capability in the same transaction (RD-12): mint a capability, rotate, assert the capability returns `401`, and that a failed rotation leaves the capability live.
+  - Replay does not reactivate the old token: before and after the replay, a snapshot of every `credentials` row and every `token_rotations` row is identical, `revoked_at` and reason of the old token are unchanged, and the old token still fails status, guess, results, rotate-with-another-key and mint with `401`.
+  - Replay on the first request after the window ends, with the ciphertext still present (cleanup not yet run): `401`. After cleanup: `401`.
+  - Loss after the window: perform a rotation, discard the response, wait out the window, retry: `401`. The seat is unreachable by any request (assert no endpoint accepts the old token or the key).
   - Replay does not work for any operation other than rotation: the old token on guess, status and results returns `401`.
   - Parallel original and retry requests: exactly one new token results, both callers receive the same token.
 - Results after rotation (R8.14): results readable with the new token, not with the old token, content identical before and after.
 - Invitation: single use. Two parallel joins admit exactly one. Used invitation returns `GAME_FULL`. Invitation of another game returns the same `404` as an unknown game, same body shape. Invitation of an expired game returns `410`. Invitation of a deleted game returns `404`.
-- Rematch: capability can only be minted when `COMPLETED`. Minting twice revokes the first. Capability cannot read the game or play. Access token cannot create a rematch. Two players creating rematches in parallel: one `201`, one `REMATCH_ALREADY_CREATED`. Old tokens do not authorise the new game. New tokens do not authorise the old game. The old invitation does not join the new game. Status of the original shows only `rematchCreated: true`. Consumed capability reused returns `401`. Nickname rules apply.
-- Rematch deletion (R9.8): delete the original, and the rematch stays playable with a null link. Delete the rematch while the original exists, and a new capability can create another rematch. A rematch of an original that cleanup is deleting at the same time results in either a complete rematch with a cleared link, or `401`, never a half-created game.
+- Rematch: capability can only be minted when `COMPLETED` and when no rematch marker exists (`REMATCH_ALREADY_CREATED` afterwards). Minting twice revokes the first. Capability cannot read the game or play. Access token cannot create a rematch. Both players mint a capability, one creates the rematch: **every other unused capability of the original is revoked in the same transaction** (CH-3), so the other player's capability returns `401 INVALID_CREDENTIALS`, the status shows `rematchCreated: true`, and minting returns `409`. Old tokens do not authorise the new game. New tokens do not authorise the old game. The old invitation does not join the new game. Consumed capability reused returns `401`. Nickname rules apply.
+- Rematch deletion and one rematch ever (R9.4, R9.8, RD-6): after a rematch exists, delete the rematch game (simulating cleanup of an unjoined rematch): the marker row remains with a null `rematch_game_id`, `rematchCreated` stays true, minting a capability returns `REMATCH_ALREADY_CREATED`, and no capability is usable. Delete the original: the marker and capabilities go with it and the rematch stays playable. A rematch of an original that cleanup is deleting at the same time results in either a complete rematch with its marker, or `401`, never a half-created game.
 - Lost-token limitation: no endpoint issues a token without a credential. An OpenAPI check asserts the only token-issuing operations are create, join, rotate, mint and createRematch, each with its required credential.
 - C-7: valid credential of an expired, not yet deleted game gives `410`. After cleanup the same token gives `401`. No `credentials` row remains for the deleted game.
 
@@ -108,6 +126,8 @@ Canonicalisation (R5.12):
 - Nonce uniqueness: encrypt 1,000,000 values under one key in a test and assert no duplicate nonce. Counter metric increments per encryption. Alert threshold configuration test.
 - Tamper tests: flip each byte of nonce, ciphertext and tag for codes, guesses and tokens, expect authentication failure.
 - AAD binding: swap ciphertext between two rows, between two games, between guess numbers, and change `key_id` to another valid id and to an unknown id. Change `exact` or `misplaced` of a guess row in the database: decryption of that row fails.
+- Serialisation exceptions (CR-1): a response-schema scan over every operation asserts that decrypted game values appear only in `getProgress` (caller's own guesses) and `getResults` (after `COMPLETED`), and that the rotation replay is the only response carrying a decrypted credential. Submit-guess, status, join, code submission, rotation (first response, a normal rotation returns a freshly generated token, not decrypted data), mint and rematch responses never contain a decrypted code or guess.
+- Results gating (R7.5): for a game in every non-completed state, a results request reads zero rows from `secret_codes` and `guesses`, performs zero decrypts, and returns `GAME_NOT_COMPLETED` (repository and vault spies). The vault's results method cannot be called without a `CompletedGame` value (type test).
 - No plaintext at rest: after submitting distinctive codes and guesses, dump the database (`pg_dump`) and assert no table stores them in plaintext (`secret_codes`, `guesses`, `idempotency_keys`, `token_rotations`). Plaintext feedback counts and guess numbers are expected.
 - Key ring: startup fails with a missing file, wrong key length, no active key, two active keys, duplicate ids and a failing self-test. `/healthz` is not ready without a ring.
 - Rotation of keys: add a key, encrypt new rows with it, run `reencrypt`, confirm all rows (codes, guesses, rotation ciphertext, fingerprints) use the new key id and decrypt correctly, run it again (no changes), run it concurrently with guess traffic (no failed guesses, no corruption), kill it mid-run and confirm no game is half-migrated (each game is all old or all new), then verify with `keys:verify`.
@@ -117,6 +137,16 @@ Canonicalisation (R5.12):
 - Vault redaction: `JSON.stringify`, template strings and `Deno.inspect` of the wrapper never reveal the value.
 - Decrypt only where allowed: a spy on the vault asserts decrypt calls occur only in guess submission, progress, results (after `COMPLETED`) and rotation replay, and zero calls for status, join, code submission, mint, rematch creation, cleanup, and for a results request on a non-completed game.
 - Performance: decrypting 20 guesses and 2 codes for a results request is measured and reported (target well under 5 ms).
+- Stored response check: every row of `idempotency_keys.response_body` and every database column other than the ciphertext columns is scanned for any code or guess played in the test game (R10.7).
+- **Encryption usage counter (RD-10, RD-13, R10.10, R10.13).** Uses an instrumented vault that counts every real encryption invocation, and the counter statement of `database-schema.md` section 6.2.
+  - Reservation before use: an encryption without a reserved unit is impossible (type or runtime guard, tested by forcing the allowance to zero with the database unavailable: the operation returns `503` and nothing is encrypted).
+  - Failed and rolled-back transactions: force a rollback after the encryption (constraint violation, injected error, timeout, client disconnect). The counter still counts the invocation. Repeat 1,000 times. At the end `sum(reserved) >= instrumented invocations`.
+  - Crash: kill an instance with `kill -9` mid-request, restart it, and assert the counter did not decrease and still covers all invocations.
+  - Multiple instances: two and then eight instances, each with parallel writers. At the end `sum(reserved) >= total invocations` and `sum(reserved) - total invocations <= instances × block × (restarts + 1)`.
+  - Never under-counts: a property test over random interleavings of reserve, encrypt, rollback and crash asserts the invariant after every step.
+  - Thresholds: with small test values, the warning metric and log fire, the rotation-required status appears in health, and past the hard stop encryption with that key is refused (`503`) while the next key works. Counting includes `reencrypt`.
+  - Invariant check: `keys:verify` fails when the rows under a key exceed its reserved total (create the condition by lowering the counter by hand).
+  - Restore: see TS-OPS (counter rollback demonstration and mandatory new key).
 
 ## 7. TS-SEC: secrecy and logging (R3, R13, OD-2)
 
@@ -124,6 +154,7 @@ Canonicalisation (R5.12):
 - Code submission response contains no code. Progress responses contain only the caller's own guesses. The opponent's guesses and feedback appear only in results.
 - Opponent progress contains only `guessesUsed`, `solved`, `exhausted`.
 - Canary test: submit distinctive codes, guesses, nicknames, tokens, idempotency keys and a distinctive client IP, trigger validation errors, rule errors, rate-limit denials, a decrypt failure and an unhandled exception. Capture all log output, metrics output and error bodies. Assert none of the canary values, any token hash, any fingerprint or any IP appears.
+- Replacement-token canary (RD-11): rotate, force each failing condition and a success, capture all logs, metrics, traces and error bodies, and assert the replacement token never appears in them. The only place it appears is the body of the successful rotation response and of a valid replay.
 - Metrics label audit: every label name and value in `/admin/metrics` belongs to the allowed bounded sets (R13.8). No game id, player id, nickname, IP or token (R13.9).
 - Error messages are fixed strings (snapshot test over all error codes).
 - The proxy access log excludes headers and query strings.
@@ -144,13 +175,14 @@ Apply all migrations to an empty database, then again (no-op). Concurrent runner
 - Third player or seat 3.
 - Second code for a player.
 - Guess number 0, 11, duplicate, gap (guess 2 without guess 1), guess after a solving guess.
-- Second rematch of one game. Rematch link cleared when the original is deleted. Rematch game deletion leaves the original intact.
+- Second marker for one original game (also after the first rematch game was deleted). Marker `rematch_game_id` cleared when the rematch game is deleted, with the marker row kept. Marker deleted when the original is deleted. Rematch game survives deletion of the original. Marker pointing at its own original rejected.
 - Two live access tokens for one player. Two live capabilities for one player. Second invitation for a game.
 - Credential for a player of another game.
 - Second idempotency record with the same `(player_id, key)` or the same `guess_id`.
 - Second rotation for the same key or the same old credential.
 - Second result for a game.
-- Nickname over 24 code points or containing a control character.
+- Nickname over 24 code points, containing a control character, or containing a bidirectional embedding, override or isolate control (U+202A to U+202E, U+2066 to U+2069). A nickname with U+200F, U+200D or U+200C is accepted.
+- `key_usage`: one counter row per `(key_id, shard)`, shard outside 0 to 31 rejected, negative count rejected.
 - Cascade: deleting a game removes every dependent row in every table.
 - Migration immutability check in CI.
 
@@ -163,8 +195,14 @@ DDL syntax and the key constraint behaviours were exercised against PostgreSQL 1
 - Concurrency: 200 parallel requests against a bucket of capacity 10 allow exactly 10.
 - Each scope in `deployment.md` section 4 has a test that the limit applies, that the response is `429` with `Retry-After`, and that other subjects are unaffected.
 - Failed credential checks consume `ip:authfail`. When it is empty, further requests from that IP get `429` before any credential lookup.
-- Random tokens create no `tok:*` bucket rows (credential buckets exist only after a credential is found).
-- Subjects stored are 32-byte values. A scan asserts no raw IP or token appears in `rate_limits`.
+- Random tokens create no `pl:*` bucket rows (player buckets exist only after the preliminary lookup finds a credential).
+- Sequence (CR-2, R20.9): for writes and reads, rate-limit updates occur as separate autocommit statements before the request transaction begins. A lock tracer asserts that no rate-limit row lock is ever held while a game lock is held or awaited, and that no `rate_limits` statement runs inside a request transaction.
+- Player scope is keyed by player id: rotating a token does not reset `pl:*` buckets.
+- Rate limiting never decides validity: a request with a revoked token that still passes the rate limiter fails with `401` at authorisation, and a valid token that is rate limited gets `429` without any credential state change.
+- Forwarded headers from outside `TRUSTED_PROXY_CIDRS` do not change the IP subject.
+- Subjects stored are 32-byte values. A scan asserts no raw IP, token or player id appears in `rate_limits`. IP subjects computed with a different HMAC key do not match (key rotation of the rate-limit secret resets buckets and old rows are pruned). `rate_limits` is excluded from the backup job (`pg_dump` output contains no rows of it).
+- Configurable (RD-2): every capacity and refill rate in `deployment.md` section 4.2 can be overridden by configuration, and the override takes effect after restart. Invalid values stop start-up.
+- Fail closed (RD-2): with the rate-limit statement failing for each reason (connection refused, timeout, permission error, lock timeout), every operation returns `503` with `Retry-After`, nothing is processed, no game state changes, and the response contains no database detail.
 - Forwarded IP: trusted from a configured proxy address, ignored from any other source (a spoofed `X-Forwarded-For` does not change the subject).
 - Fail closed: with the rate-limit statement failing (database error injected), requests return `503`.
 - Cleanup removes idle rows and leaves active ones.
@@ -178,7 +216,7 @@ Uses an injectable database clock offset for service tests and direct `expires_a
 - Boundary: at `expires_at - 1 ms` an operation succeeds. At exactly `expires_at` and after it every operation returns `GAME_EXPIRED` (`>=`). Test every operation, in authorisation, in the in-transaction recheck and in cleanup (cleanup deletes a game whose `expires_at` equals the reference time).
 - A request whose authorisation point ran before expiry but whose transaction would commit after it: the single reference time decides, the request succeeds consistently or fails consistently, never a mixed state.
 - Credentials of an expired game fail at once, before cleanup runs, with `410`. After cleanup, `401` and zero credential rows.
-- Cleanup deletes the game and every dependent row (assert zero rows in every table for the game id, including `token_rotations`, `idempotency_keys` and `secret_codes`), leaves other games intact, and clears `rematch_of` on a surviving rematch.
+- Cleanup deletes the game and every dependent row (assert zero rows in every table for the game id, including `token_rotations`, `idempotency_keys`, `secret_codes` and `rematch_markers` of the original), leaves other games intact, and leaves a surviving rematch game playable with no link to the deleted original.
 - Repeatability: run twice, second run deletes nothing. Batch size smaller than the number of expired games loops to completion. Interrupt a run (kill between batches) and rerun.
 - Cleanup also clears expired rotation ciphertext and idle rate-limit rows.
 - Dry run deletes nothing and reports the count.
@@ -200,15 +238,18 @@ Each scenario runs many iterations with randomised ordering and barriers to forc
 | TS-CONC-06 | Guess racing with rotation of the same token | Guess commits before rotation (success) or fails `401`. Never both tokens live |
 | TS-CONC-07 | Two rotations with different keys from the same token | One rotates, the other `401` or `409` |
 | TS-CONC-08 | Rotation request and its retry in parallel (same key) | One rotation, same token returned to both |
-| TS-CONC-09 | Both players request a rematch at once | One `201`, one `REMATCH_ALREADY_CREATED` |
-| TS-CONC-10 | Rematch creation while the original is expiring and cleanup runs | Complete rematch with cleared link, or `401`/`GAME_EXPIRED`, never a partial game |
+| TS-CONC-09 | Both players present rematch capabilities at once | One `201`. The winner's transaction revokes every other unused capability, so the loser gets `401`. Exactly one marker row |
+| TS-CONC-10 | Rematch creation while the original is expiring and cleanup runs | Complete rematch with its marker, or `401`/`GAME_EXPIRED`, never a partial game |
 | TS-CONC-11 | Cleanup while guesses run in other games and in a game being refreshed | No deadlock, no deleted live game, refreshed game survives |
 | TS-CONC-12 | Two cleanup runs at once | Each expired game deleted once |
-| TS-CONC-13 | Cleanup deleting an original while its rematch game is active | Lock wait at most `lock_timeout`, no deadlock, rematch continues |
+| TS-CONC-13 | Cleanup deleting an original while its rematch game is active, and cleanup deleting a rematch game while the original is active | Lock wait at most `lock_timeout`, no deadlock, rematch continues in the first case and the marker stays with a null link in the second |
 | TS-CONC-14 | `reencrypt` running during guesses, results reads and rotation replay | All requests succeed with correct data. Each game fully old or fully new |
 | TS-CONC-15 | Rate-limit bucket hit from many instances | Exactly capacity allowed |
 | TS-CONC-16 | Read racing with completion | Read returns a consistent pre- or post-completion view, results never partial |
-| TS-CONC-17 | Lock-order check | A test records lock acquisition order across all operations in the instrumented database and asserts it never violates L0, L1, L2, L3 of `design.md` section 8.2 |
+| TS-CONC-17 | Lock-order check | A test records lock acquisition order across all operations in the instrumented database and asserts it never violates the levels L0, L1, L2 of `design.md` section 8.2 |
+| TS-CONC-18 | A token is revoked (rotation commits) between the preliminary lookup and the authoritative validation, for a write and for a read | `401` in both cases. No state change. A read whose snapshot began before the commit may complete with the old token |
+| TS-CONC-19 | After the first rematch game was deleted, many attempts to mint a capability and to create a rematch race | Every mint returns `REMATCH_ALREADY_CREATED`. No capability is usable (`401`). Exactly one marker row remains |
+| TS-CONC-20 | Many writing transactions on two or more instances, some rolled back or killed, reserve and consume encryptions | `sum(reserved)` never below the instrumented invocation count, no deadlock, no reservation holds a lock while waiting for another |
 
 ## 13. TS-API and TS-CONTRACT (R12)
 
@@ -225,8 +266,9 @@ Each scenario runs many iterations with randomised ordering and barriers to forc
 - Admin token required: missing and wrong token get `401`, comparison is constant time, player tokens never pass.
 - Metrics and cleanup endpoints behave as specified. Cleanup endpoint and the CLI task share code (same results on the same data).
 - The `cleanup` service runs on the configured interval. Application instances never run it (test: start instances without the service, nothing is deleted).
-- Restore drill (automated in CI against a throwaway database): take `pg_dump`, delete games by cleanup, restore, assert deleted games return, run `cleanup` before traffic and assert they are gone again. Rate-limit table cleared after restore. Rotation after the backup is reverted by the restore (documented behaviour).
+- Restore drill (automated in CI against a throwaway database, and run by hand with a real backup before production): take `pg_dump`, record the `key_usage` totals, run more writes, delete games by cleanup, restore. Assert the deleted games return and **the restored `key_usage` totals are lower than before the restore** (the hazard). Then follow `deployment.md` section 6.1: activate a new key, check the previous key is `DECRYPT_ONLY` and still decrypts all restored data, `keys:verify` passes, the application refuses to start if a key whose `deactivatedAt` is set is marked `ACTIVE` again (ring check), run `cleanup` before traffic and assert the games are gone again, `rate_limits` is empty (excluded from backup), and a rotation made after the backup is reverted (documented behaviour). A restore proved lossless (restored totals not below pre-restore totals) may skip the new key, and the test covers that path with the proof step.
 - Start-up refuses missing secrets, invalid TTLs, missing trusted proxy list in production mode.
+- Caddy build (RD-1, CH-6, R18.6): the build runs from the committed pins (module at its exact commit) and produces a binary. A second independent build gives the same sha256. `go mod verify` passes. `go version -m` matches `BUILD-PINS.md`. The Compose file references the proxy image by digest. The proxy configuration returns `404` for `/admin/*` and enforces the coarse limits. The Nginx fallback configuration passes the same limit tests.
 
 ## 15. TS-SIM and TS-LOAD
 
@@ -238,6 +280,8 @@ Defined in `simulator-design.md`. The CI simulation job runs 200 games with a fi
 - Cross-references between specification files resolve.
 - `docs/API.md` states the lost-token limitation and the rotation retry rules.
 - The curl walk-through runs as a script in CI.
+- `LICENSE` exists and its text matches the FSF AGPL-3.0 text (recorded sha256 in `revision-3.1-review-package.md`). `NOTICE` and `CONTRIBUTING.md` exist and `NOTICE` names AGPL-3.0-only. Every source file has the SPDX header once source exists.
+- `README.md` contains no email or device signature text.
 
 ## 17. CI (R17.3)
 

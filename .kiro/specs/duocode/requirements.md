@@ -1,11 +1,11 @@
-# DuoCode Requirements (Backend MVP 1), revision 3
+# DuoCode Requirements (Backend MVP 1), revision 3.1 (final for gate review)
 
 Source: `DuoCode-Requirements` v2.0 (baseline, dated 21 November 2026) and the owner decisions in the decision register.
 Scope: MVP 1, a backend-only game playable through the REST API. The web application, PWA, white-label and multi-tenant work are out of scope.
 
 Status: **draft for owner approval. No implementation is authorised.** Implementation stays unauthorised until all six Phase 1 gates in `tasks.md` are explicitly signed off.
 
-Revision history: revision 2 added the owner decisions OD-1 to OD-10. Revision 3 applies the owner review of revision 2. The change summary is in `revision-3-review-package.md`.
+Revision history: revision 2 added the owner decisions OD-1 to OD-10. Revision 3 applied the owner review of revision 2. Revision 3.1 applies the owner review of revision 3: technical corrections CR-1 to CR-8, the RD-1 to RD-13 decisions, the CH-1 to CH-6 choices with the owner's qualifications, and the licensing artefacts. It does not change the architecture or widen MVP 1. The owner has approved all technical decisions below. Only the gate 6 inputs listed under "Inputs still needed" remain open. The change summary is in `revision-3.1-review-package.md`.
 
 ## Specification set
 
@@ -23,7 +23,8 @@ This file owns the requirements and the decision register. Other artefacts own t
 | `test-strategy.md` | Test layers, required cases, test group IDs, CI jobs |
 | `simulator-design.md` | Simulator behaviour and replay |
 | `deployment.md` | Compose stack, secrets, rate-limit values, backups, restore, key recovery, scheduling |
-| `revision-3-review-package.md` | Change summary, review checklist, remaining decisions |
+| `revision-3.1-review-package.md` | Change summary from revision 3, verification results, remaining decisions |
+| `LICENSE`, `NOTICE`, `CONTRIBUTING.md` (repository root) | Proposed licensing artefacts for gate 6 review |
 | `tasks.md` | Phased tasks and approval gates |
 
 ## Glossary
@@ -41,6 +42,7 @@ This file owns the requirements and the decision register. Other artefacts own t
 - **Rematch capability**: Bearer credential that authorises creating one rematch of one completed game. It grants no access to any game.
 - **Credential**: Any of the three tokens above.
 - **Reference time**: The database clock value read once at the authorisation point of a request. Every expiry and validity decision in that request uses it.
+- **Rematch marker**: A database row keyed by the original game that records that a rematch was created. It lives as long as the original game and does not depend on the rematch game's lifetime (R9.4).
 - **Retention end** (`expires_at`): The instant at or after which a game and everything attached to it is expired.
 - **Expired**: `reference time >= expires_at`. The same test applies in authentication, operations and cleanup.
 - **Authorisation point**: The single function, called inside each request's database transaction, that decides whether a presented credential is currently valid for the requested operation (design section 5).
@@ -62,11 +64,24 @@ The values live in one configuration object so later work can vary them. MVP 1 d
 
 ## Decision register
 
-Status values: **Approved** (owner approved, recorded in revision 3 review), **Approved in principle** (approved subject to a pending detail), **Pending** (needs owner decision).
+Status values: **Approved** (owner approved), **Approved with conditions** or **with extension** or **with qualification** (approved, and the conditions are applied in the text and listed in the row), **Pending** (needs an owner decision). No technical decision is pending in revision 3.1.
 
 ### Owner decisions from revision 2
 
-OD-1 to OD-10 stand as in revision 2: baseline repository layout (OD-1), own code never returned after submission (OD-2), opponent progress limited to counts and flags (OD-3), mandatory `Idempotency-Key` (OD-4), retention defaults (OD-5), application-level encryption (OD-6), separate credentials and no recovery (OD-7), separate specification artefacts (OD-8), date 21 November 2026 correct (OD-9), implementation unauthorised (OD-10). All are Approved.
+All ten are Approved and unchanged in substance.
+
+| ID | Decision | Applied in |
+|---|---|---|
+| OD-1 | Repository layout follows the baseline: `backend/`, `tools/`, `tools/simulator/`, `openapi/`, `docs/`. The README agrees. A `frontend/` directory is added when browser work starts. | R19.1, `design.md` section 3 |
+| OD-2 | A player's own secret code is never returned by the API after submission, and is excluded from logs, diagnostics and error responses. | R3.6, R3.7, R13.2 |
+| OD-3 | A player sees the opponent's guess count, solved flag and exhausted flag, never the opponent's guesses or feedback. | R6.3 |
+| OD-4 | `Idempotency-Key` is mandatory on guess submission and fully specified. | R5 |
+| OD-5 | Retention defaults: unjoined 7 days, in progress 30 days, completed 180 days, configurable. | R11 |
+| OD-6 | Secret codes are encrypted at rest with authenticated encryption (AES-256-GCM). Keys are held outside PostgreSQL and its backups. | R10 |
+| OD-7 | Game access tokens, rematch capabilities and invitation tokens are separate and hashed at rest. A rematch creates a new game with entirely new tokens. No token recovery. Rotation and revocation are atomic. | R8, R9 |
+| OD-8 | Specification artefacts are separate files. The OpenAPI document is produced and reviewed before implementation. | R12.6, R19.5 |
+| OD-9 | The baseline date of 21 November 2026 is correct. | Header |
+| OD-10 | No implementation is authorised. Phase 1 contains the approval gates. | `tasks.md` |
 
 ### Decisions approved in the revision 3 review
 
@@ -86,7 +101,7 @@ OD-1 to OD-10 stand as in revision 2: baseline repository layout (OD-1), own cod
 | C-3 | Duplicate nicknames allowed. | Approved | R1.3 |
 | C-4 | Administrative operations limited to metrics and cleanup behind a separate admin token. | Approved | R21 |
 | C-5 | No token refresh flow. | Approved | R8 |
-| C-6 | Rate limiting in two layers. Approved in principle. Numerical values are recommended in `deployment.md` section 4 for owner approval. | Approved in principle | R20 |
+| C-6 | Rate limiting in two layers: coarse per-IP limits at the proxy and shared PostgreSQL limits in the application. Numerical values approved through RD-2. | Approved | R20 |
 | C-7 | A valid credential of an expired but not yet deleted game returns `410 GAME_EXPIRED`. After deletion the response is `401 INVALID_CREDENTIALS`. Credential records are not retained to preserve the expired response. | Approved with clarification | R8.8, R11.3 |
 
 ### Engineering clarifications from the revision 3 review
@@ -102,22 +117,62 @@ OD-1 to OD-10 stand as in revision 2: baseline repository layout (OD-1), own cod
 | CL-7 | Database constraints enforce player limits, guess limits, rematch uniqueness and idempotency wherever practical. | R5.10, R9.4, `database-schema.md` section 3 |
 | CL-8 | Lock ordering and deadlock avoidance documented. Join, guess, rotation, rematch and cleanup races are tested. | `design.md` section 8, R17 |
 
+### Corrections in revision 3.1
+
+| ID | Correction | Applied in |
+|---|---|---|
+| CR-1 | Decrypted game values may be serialised into an API response in exactly two cases: a player's own guesses and feedback through progress, and both codes, all guesses and feedback through results after `COMPLETED`. Results verify completion before any ciphertext is read. Decrypted values stay out of logs, diagnostics, metrics, traces, errors and persistent plaintext storage. | R7.5, R10.7, R13.2 |
+| CR-2 | Authenticated reads use this order: preliminary non-authoritative credential lookup, rate-limit update in a short autocommit transaction, begin a read-only `REPEATABLE READ` transaction, authoritative credential validation as its first statement, all data from the same snapshot. Writes use the same first two steps, then lock the game row and validate. | R8.11, R8.12, R20 |
+| CR-3 | Rotation idempotency keys must be UUIDv4 from a cryptographically secure random source. Other idempotency keys keep the general UUID rule. Replaying a successful rotation inside the window returns the original response and does not restore or reactivate the old token. Losing the replacement token after the window loses the seat. | R5.1, R8.13 |
+| CR-4 | Caddy is retained with a pinned, reproducible custom build, with documented provenance and maintenance. | R18.6, `deployment.md` section 4.3 |
+| CR-5 | `LICENSE`, `NOTICE` and `CONTRIBUTING.md` are prepared for gate 6 review now. | R19.2, `tasks.md` 1.6 |
+| CR-6 | The stray email signature is removed from `README.md`. | R19.1 |
+| CR-7 | All documents were reviewed for consistency with the revised decisions. Consistency checks are reported in the review package. | R19.5 |
+| CR-8 | The rematch-created marker is a separate database row that survives deletion of the rematch game. | R9.4, R9.8, `database-schema.md` |
+
+### Decisions from the revision 3.1 review (RD-1 to RD-13)
+
+| ID | Owner response | Status | Applied in |
+|---|---|---|---|
+| RD-1 | Retain Caddy with a pinned, reproducible custom build of the selected rate-limit module. Document provenance and maintenance. | Approved | R18.6, `deployment.md` 4.3 |
+| RD-2 | Recommended rate limits approved, provided that all values stay configurable, enforcement is shared across application instances, and a failure of the PostgreSQL rate-limit store fails closed with `503`. | Approved with conditions | R20.2, R20.7, R20.8, `deployment.md` 4.2 |
+| RD-3 | Rotation replay window of 10 minutes. | Approved | R8.13 |
+| RD-4 | Separate admin listener. | Approved | R21.1 |
+| RD-5 | Unicode code-point counting, trimming and control-character rejection. Also reject bidirectional override and isolation controls. Preserve legitimate Unicode. | Approved with extension | R1.3 |
+| RD-6 | Only one rematch ever per original game, even after the rematch expired or was deleted. The marker is independent of the rematch game's lifetime. | Approved | R9.4, R9.8 |
+| RD-7 | No point-in-time recovery for MVP 1, accepted as a documented operational risk. Reassess before production. | Approved as accepted risk | R21.4, `deployment.md` 12 |
+| RD-8 | HMAC fingerprints for guess requests. | Approved | R5.12 |
+| RD-9 | HMAC of client IP in rate-limit storage, with documented privacy implications, retention and key management. | Approved | R20.4, R20.10, `security-assessment.md` 6.2 |
+| RD-10 | Nonce thresholds: warning at 2^27 encryptions per key, mandatory rotation by 2^28, hard stop at 2^30. The counter must account for every encryption invocation, including those in failed or rolled-back application transactions. | Approved | R10.10, `security-assessment.md` 3.3a |
+| RD-11 | Rotation replay may decrypt and return the replacement token, as a narrow third exception, only when: the original token is presented, the original UUIDv4 key is presented, the request fingerprint matches, the replay window is valid, and the replacement token has not been revoked. The replacement token never appears in logs, diagnostics, metrics or error responses. A replay never reactivates the old token. | Approved | R8.13, R10.7, R13.2 |
+| RD-12 | Rotating a player's access token revokes that player's unused rematch capability in the same transaction. | Approved | R8.6 |
+| RD-13 | Key usage counter, approved on conditions: reservations are durable and cannot be rolled back with the application transaction. The counter can never underestimate actual encryption usage. A database restore procedure prevents continued encryption under a key whose counter may have been rolled back. A new key is activated before traffic is accepted after a restoration where necessary. Old keys remain available for decryption. | Approved with conditions | R10.10, R10.13, R21.4, `database-schema.md`, `deployment.md` 6.1 |
+
+### Choices CH-1 to CH-6
+
+| ID | Owner response | Status | Applied in |
+|---|---|---|---|
+| CH-1 | Allow legitimate Unicode joiners and international text. Reject bidirectional embedding, override and isolation controls. Include display-security tests. | Approved with qualification | R1.3, R1.5, `test-strategy.md` TS-VAL |
+| CH-2 | Exclude rate-limit data from backups. | Approved | `deployment.md` 5 |
+| CH-3 | Revoke all unused rematch capabilities when a rematch is successfully created. | Approved with qualification (replaces the revision 3.1 draft rule that kept unused capabilities, unconsumed and answering `409`) | R9.9, `state-machine.md` 3, 4 |
+| CH-4 | Player-keyed rate-limit buckets. Token rotation must not reset rate limits. | Approved with qualification | R20.4 |
+| CH-5 | Deterministic UUIDv4-compatible rotation keys for simulator testing, derived from the simulator seed and game identity. Production keys always use cryptographically secure randomness. | Approved with qualification | R15.5, `simulator-design.md` |
+| CH-6 | Pin the Caddy rate-limit module to its exact commit and retain the reproducible build and provenance checks. | Approved | R18.6, `deployment.md` 4.3 |
+
 ### Decisions awaiting owner approval
 
-These arose while applying revision 3. Each has a proposal that the drafts assume. None is final until approved. The review package repeats this list with the owner action needed.
+None of the technical decisions is pending. Approval of the six Phase 1 gates, each to be authorised explicitly, remains with the owner (`tasks.md` Phase 1).
 
-| ID | Decision needed | Proposal |
+### Inputs still needed for gate 6 (licensing)
+
+These are not technical decisions. The specification does not invent them: the files carry placeholders.
+
+| ID | Input needed from the owners | Where it shows |
 |---|---|---|
-| RD-1 | Stock Caddy has no rate-limit module. | Build Caddy with the `caddy-ratelimit` plugin (xcaddy) for the coarse IP limits. Fallback: Nginx with `limit_req`, which the baseline allows. |
-| RD-2 | Numerical rate limits, failure mode, and the failed-credential policy. | Values in `deployment.md` section 4. If the limiter cannot reach the database the request fails closed with `503`. The earlier "5-minute block" after failed credential checks is replaced by a token-bucket throttle. |
-| RD-3 | Rotation replay window length, and effect of rotation on the player's rematch capability. | Window 10 minutes (configurable). Rotation also revokes the player's unused rematch capability, in the same transaction. |
-| RD-4 | Where the admin interfaces are served. | A separate admin listener on the internal network only. The public proxy does not route `/admin/*`. |
-| RD-5 | Nickname control-character scope. | Reject Unicode general category `Cc` as instructed, and also reject malformed Unicode (lone surrogates). Format characters (category `Cf`, for example bidirectional overrides) are allowed unless you decide otherwise. |
-| RD-6 | Rematch slot after the rematch game is deleted. | If the rematch game is deleted while the original still exists, the original can have a new rematch. Deleting the original leaves the rematch playable and clears its link. |
-| RD-7 | Point-in-time recovery for the database. | Not in MVP 1. A restore returns credential state to the backup time. Players who rotated since then lose their seat, and previously rotated-away tokens become valid again. Documented in `deployment.md` section 6. |
-| RD-8 | Guess fingerprints cannot be plain hashes because a hash of one of 1296 possible guesses is trivially reversible, which would defeat ND-7. | Fingerprints for guess requests are HMAC-SHA-256 over the canonical form, keyed from the key ring with HKDF. They are re-keyed together with ciphertext during re-encryption. |
-| RD-9 | Client IP source and storage for rate limiting. | Take the client IP from the proxy header only for requests arriving from configured proxy addresses. Store only an HMAC of the IP, keyed by a separate secret, never the address. |
-| RD-10 | Nonce safety margin. | Random 96-bit nonces. Alert when any key has encrypted 2^28 values and rotate that key. The NIST limit for random nonces is 2^32. |
+| LI-1 | Exact copyright holder names (and any affiliation to show) | `NOTICE` |
+| LI-2 | Whether a contributor licence agreement is required before outside contributions | `CONTRIBUTING.md` 1, 2 |
+| LI-3 | Legal review of the contribution terms and the dual-licensing position | `CONTRIBUTING.md` 2 |
+| LI-4 | Security contact address | `CONTRIBUTING.md` 4 |
 
 ## Requirements
 
@@ -131,10 +186,11 @@ Acceptance criteria use EARS wording. Baseline references (FR-nnn, SIM-nnn, SCAL
    a. Trim leading and trailing Unicode white space (code points with the `White_Space` property).
    b. Reject the result if it is empty.
    c. Reject the result if it is longer than 24 Unicode code points (not UTF-16 units and not bytes).
-   d. Reject the result if it contains any code point in Unicode general category `Cc` (U+0000 to U+001F and U+007F to U+009F), and reject malformed Unicode such as unpaired surrogates (RD-5).
+   d. Reject the result if it contains any code point in Unicode general category `Cc` (U+0000 to U+001F and U+007F to U+009F), any bidirectional embedding, override or isolate control (U+202A to U+202E and U+2066 to U+2069), or malformed Unicode such as unpaired surrogates (RD-5). Other Unicode, including directional marks (U+200E, U+200F, U+061C), joiners (U+200C, U+200D), emoji sequences and combining characters, is legitimate text and SHALL be accepted (CH-1).
    e. Store and return the trimmed value exactly as accepted, with no case folding, normalisation or changes to interior characters.
    f. Permit duplicates, including two players in one game with the same nickname.
 4. THE system SHALL return each token in plaintext only in the response that creates it, and SHALL store only token hashes (exception: R8.13).
+5. THE system SHALL return nicknames only as JSON string values, with `Content-Type: application/json; charset=utf-8` and `X-Content-Type-Options: nosniff`, never as HTML, and SHALL NOT alter them on output. The API documentation SHALL instruct clients to escape nicknames for the display context and to render them in an isolated bidirectional context (for example an HTML `<bdi>` element or `dir="auto"` with `unicode-bidi: isolate`), so that mixed-direction names cannot reorder neighbouring text. Rejecting embedding, override and isolate controls (R1.3) is a server-side defence in depth, not a replacement for client escaping. (CH-1)
 
 ### R2: Joining
 
@@ -170,7 +226,7 @@ Acceptance criteria use EARS wording. Baseline references (FR-nnn, SIM-nnn, SCAL
 
 ### R5: Idempotency and concurrency
 
-1. THE guess endpoint SHALL require an `Idempotency-Key` header whose value is a UUID in canonical text form (8-4-4-4-12 hexadecimal digits, case-insensitive, any version). THE system SHALL reject a missing or malformed key with `INVALID_IDEMPOTENCY_KEY`. (OD-4)
+1. THE guess endpoint SHALL require an `Idempotency-Key` header whose value is a UUID in canonical text form (8-4-4-4-12 hexadecimal digits, case-insensitive, any version). THE system SHALL reject a missing or malformed key with `INVALID_IDEMPOTENCY_KEY`. Clients SHOULD use UUIDv4. The rotation endpoint uses a stricter rule (R8.13). (OD-4)
 2. THE scope of uniqueness SHALL be the triple (acting player, operation, key). A key is therefore unique per player and per game, because a player belongs to one game, and per operation. The same key value used by the other player, in another game or for another operation is unrelated and SHALL NOT conflict or leak information.
 3. THE system SHALL recognise a duplicate by looking up (acting player, operation, key) inside the operation's transaction, after taking the game lock.
 4. WHEN a duplicate key arrives with the same request fingerprint, THE system SHALL return the stored original status and body unchanged, with the header `Idempotent-Replay: true`, and SHALL NOT record a guess, change a count or change any other state.
@@ -207,7 +263,7 @@ Acceptance criteria use EARS wording. Baseline references (FR-nnn, SIM-nnn, SCAL
 
 3. THE system SHALL NOT end the game when only one player is finished. (3.6)
 4. WHEN the game is `COMPLETED`, THE results response SHALL contain both secret codes, both players' guesses and feedback, guesses used, solved status, the outcome and the completion time. (3.8, ND-1)
-5. IF results are requested while the game is not `COMPLETED`, THEN THE system SHALL reject the request with `GAME_NOT_COMPLETED` and SHALL NOT decrypt or reveal any code or guess.
+5. IF results are requested while the game is not `COMPLETED`, THEN THE system SHALL reject the request with `GAME_NOT_COMPLETED` and SHALL NOT read any ciphertext, decrypt or reveal any code or guess. THE system SHALL verify within the request's snapshot that the game is `COMPLETED` before any secret-code ciphertext is read or decrypted (CR-1).
 6. THE system SHALL retain enough data to reconstruct the game and its result until the retention end. (FR-013)
 
 ### R8: Credentials
@@ -222,9 +278,9 @@ Acceptance criteria use EARS wording. Baseline references (FR-nnn, SIM-nnn, SCAL
 8. THE system SHALL reject revoked, consumed, unknown, deleted and wrong-type credentials with an identical `401 INVALID_CREDENTIALS` response. A credential that would otherwise be accepted but belongs to a game that is expired and not yet deleted SHALL receive `410 GAME_EXPIRED`. Once the game and its credentials are deleted the response is `401`. THE system SHALL NOT keep credential records solely to preserve the `410` response. (C-7)
 9. THE system SHALL NOT provide any mechanism to recover a lost credential. Without an account or independently verified identity, possession of the token is the only proof of identity. This limitation SHALL be documented in the API documentation and security assessment. (OD-7)
 10. Credentials SHALL be invalid once the game is expired (`reference time >= expires_at`), whether or not cleanup has run.
-11. EVERY authenticated operation SHALL decide credential validity at one authorisation point inside its database transaction, using one reference time. The HTTP layer SHALL only extract the token and apply IP rate limits. For state-changing operations the authorisation point runs after the game-row lock. (CL-1)
-12. EVERY read operation SHALL run in a single read-only snapshot transaction in which the authorisation point and all data reads see the same committed state. A read whose snapshot began before a rotation commits MAY succeed with the old token. A read that begins after the commit SHALL NOT. (CL-1)
-13. THE rotation operation SHALL be idempotent so a lost response does not lock the player out (ND-4). It SHALL require an `Idempotency-Key`. For the rotation replay window after the first successful rotation (default 10 minutes, RD-3), the revoked old token presented with the same key and the same fingerprint SHALL return the same new token with `Idempotent-Replay: true`, as long as the new token has not itself been revoked. The server SHALL hold the new token for this purpose only as AES-256-GCM ciphertext under the key ring, and SHALL clear it after the window. A different key with the old token, or any request after the window, SHALL receive `401`. A reused key with a different old token SHALL receive `409 IDEMPOTENCY_CONFLICT`.
+11. EVERY authenticated operation SHALL decide credential validity authoritatively at one authorisation point inside its database transaction, using one reference time. Before that, the HTTP layer SHALL extract the token and the service SHALL perform a preliminary credential lookup that is non-authoritative: it is used only to find the player for rate limiting and to reject tokens that do not exist, and it SHALL NOT grant access. For state-changing operations the authoritative decision runs after the game-row lock. (CL-1, CR-2)
+12. EVERY authenticated read operation SHALL proceed in this order (CR-2): (1) preliminary credential lookup, which grants nothing; (2) rate-limit update in a short autocommit transaction (R20); (3) begin a read-only `REPEATABLE READ` transaction; (4) authoritative credential validation as the first statement of that transaction; (5) read the requested data from the same snapshot. A credential revoked before step 4 fails at step 4 even if steps 1 and 2 passed. A read whose snapshot began before a rotation commits MAY succeed with the old token. A read that reaches step 3 after the commit SHALL NOT. Rate limiting never grants or denies credential validity.
+13. THE rotation operation SHALL be idempotent so a lost response does not lock the player out (ND-4, CR-3, RD-11). It SHALL require an `Idempotency-Key` that is a version 4 UUID (random UUID, version nibble 4, variant bits `10`), which clients SHALL generate from a cryptographically secure random source, because for rotation the key acts as a replay secret with 122 bits of randomness. The server SHALL reject any other UUID version or a malformed key with `INVALID_IDEMPOTENCY_KEY`. Inside the rotation replay window (10 minutes by default, RD-3), THE system SHALL decrypt and return the replacement token again, with `Idempotent-Replay: true`, if and only if ALL of these hold: (a) the original, now revoked, access token is presented; (b) the original UUIDv4 idempotency key is presented; (c) the request fingerprint matches; (d) the replay window is still valid at the reference time; (e) the replacement token has not been revoked. Otherwise THE system SHALL return `401` (or `409 IDEMPOTENCY_CONFLICT` for a reused key with a different old token) and SHALL NOT decrypt anything. A replay SHALL change no state: it SHALL NOT restore, reactivate or un-revoke the old token, and the old token stays `REVOKED` for every other operation. The server SHALL hold the replacement token only as AES-256-GCM ciphertext under the key ring and SHALL clear it after the window. The replacement token SHALL NEVER appear in logs, diagnostics, metrics, traces or error responses. If the client loses the replacement token and the window has passed, the seat is lost: there is no other way to recover it (R8.9). This is the third, narrowly defined serialisation exception, for a credential and not for game data (R10.7, RD-11 approved).
 14. THE results of a completed game SHALL remain readable by the player through the player's current access token after any number of rotations. A token revoked by rotation SHALL NOT read results. Rotation changes who may read, not what is stored.
 
 ### R9: Rematch
@@ -232,11 +288,12 @@ Acceptance criteria use EARS wording. Baseline references (FR-nnn, SIM-nnn, SCAL
 1. WHEN a participant of a `COMPLETED` game requests a rematch capability with their access token, THE system SHALL create a new capability, revoke any previous unused capability of that player for that game, and return the capability once. (ND-3)
 2. WHEN a client presents a valid rematch capability and a valid nickname, THE system SHALL, in one transaction, consume the capability, create a new game linked to the original, create the requester as seat 1 with a new game access token, and create a new invitation token. (OD-7, ND-2)
 3. THE new game SHALL have entirely new credentials. Tokens of the original game SHALL NOT authorise any operation on the new game, and the new game's tokens SHALL NOT authorise the original game.
-4. THE system SHALL permit at most one existing rematch per original game, enforced by a database uniqueness constraint on the link. A second attempt SHALL receive `409 REMATCH_ALREADY_CREATED`.
+4. THE system SHALL permit at most one rematch ever per original game, even after that rematch has expired or been deleted (RD-6). A rematch marker SHALL record it: a database row whose primary key is the original game id and whose reference to the rematch game does not depend on the rematch game's lifetime. Minting a capability once a marker exists SHALL receive `409 REMATCH_ALREADY_CREATED`. Creation through any other path that reaches the marker insert SHALL receive the same error. The primary key SHALL enforce the rule (CL-7, CR-8).
 5. IF the original game is not `COMPLETED`, THEN THE system SHALL refuse to mint a capability with `GAME_NOT_COMPLETED`.
 6. THE original game's status SHALL report only whether a rematch exists, never the new game's identifier or credentials.
 7. THE system SHALL NOT re-issue tokens of the new game. The opponent obtains the invitation from the player who created the rematch, outside the API.
-8. THE link from a rematch to its original SHALL be a foreign key that is cleared (set to null) when the original is deleted. The rematch continues as an ordinary game. Deleting a rematch game SHALL NOT affect the original except that the original may then have a new rematch (RD-6). Capabilities belong to the original game and are deleted with it.
+8. THE marker SHALL be created in the same transaction as the rematch game and SHALL live as long as the original game, being deleted with it. The reference from the marker to the rematch game SHALL be cleared (set to null) when the rematch game is deleted, and the marker SHALL remain. Deleting a rematch game SHALL NOT remove the marker, so the original can never have a second rematch. The rematch game's link to its original is derived from the marker, so it ends when the original is deleted. The rematch continues as an ordinary game. Capabilities belong to the original game and are deleted with it.
+9. WHEN a rematch is created successfully, THE system SHALL, in the same transaction, revoke every unused rematch capability of the original game (reason `SUPERSEDED`), so that no capability remains usable (CH-3). A presenter of a revoked capability receives `401 INVALID_CREDENTIALS`, and the original's status shows `rematchCreated: true`. WHEN a rematch marker exists, an attempt to mint a capability SHALL receive `409 REMATCH_ALREADY_CREATED`. The marker's primary key remains the backstop if any other path reaches creation (R9.4).
 
 ### R10: Encryption and key management
 
@@ -246,12 +303,13 @@ Acceptance criteria use EARS wording. Baseline references (FR-nnn, SIM-nnn, SCAL
 4. THE system SHALL support a key ring with an integer identifier per key, a status (`ACTIVE` for one key, `DECRYPT_ONLY` for older keys) and creation date. Identifiers SHALL never be reused. Each ciphertext row SHALL record the key identifier that encrypted it.
 5. THE system SHALL provide a re-encryption task that moves every ciphertext and keyed fingerprint to the active key. It SHALL process one whole game per transaction under the game lock, so a game is never partly migrated. It SHALL be safe to run repeatedly and while the service is live.
 6. THE system SHALL refuse to start without a valid active key, and SHALL verify the key ring with a self-test at start-up.
-7. THE system SHALL decrypt only in these paths: guess submission (opponent's code, and the stored guess for replay comparison through the fingerprint), progress (the caller's own guesses), results (after `COMPLETED`: both codes and all guesses) and rotation replay (the stored token). A decrypted value SHALL exist only inside the callback that uses it, SHALL NOT be assigned to long-lived state, logged, serialised or placed in an error, and its buffer SHALL be cleared after use as far as the runtime permits.
+7. THE system SHALL decrypt a secret code or guess only in these paths (CR-1): (a) guess submission, which decrypts the opponent's code to compute feedback and serialises only the feedback; (b) progress, which decrypts the caller's own guesses and returns them with their feedback to the authenticated caller; (c) results, only after the game is verified `COMPLETED` and before any ciphertext is read, which decrypts both codes and all guesses and returns them with feedback to an authenticated participant. Exceptions (b) and (c) are the only cases in which a decrypted game value may be serialised into an API response. The one other permitted serialisation of decrypted data is the replacement token in a rotation replay, a credential and not game data, under the conditions of R8.13 (RD-11). A decrypted value SHALL NOT be written to logs, diagnostics, metrics, traces, error responses, crash output or any persistent plaintext storage (including stored idempotency responses and any column other than the ciphertext columns), SHALL NOT be assigned to long-lived state, and SHALL exist only inside the callback that uses it, with its buffer cleared afterwards as far as the runtime permits.
 8. THE game engine SHALL receive decrypted codes and guesses only as function arguments and SHALL contain no cryptography. Decryption lives in the persistence layer. (R14)
 9. THE documentation SHALL describe key generation, storage, backup, recovery, rotation, retirement and compromise response, including that losing every copy of a key makes the affected data unrecoverable. (`security-assessment.md`, `deployment.md`)
-10. THE system SHALL document nonce uniqueness: nonces are random, there SHALL be a metric of encryptions per key, and a key SHALL be rotated before it reaches 2^28 encryptions (RD-10).
+10. THE system SHALL keep a durable, shared usage counter per encryption key and enforce these thresholds (RD-10, RD-13): a warning at 2^27 encryptions, mandatory rotation by 2^28, and a hard stop at 2^30 after which the key is not used to encrypt. Nonces are random 96-bit values. The counter SHALL be a reservation made before use: an instance SHALL reserve a block of encryptions in its own short autocommit transaction, committed before any encryption in that block is performed, and SHALL NOT perform an encryption it has not reserved. Reservations are therefore not undone when an application transaction fails or rolls back, an instance crashes, or a request is retried, and the counter can overestimate use but SHALL NEVER underestimate it. Every encryption invocation consumes a reserved unit, whether or not the surrounding transaction commits. If a reservation cannot be made, THE system SHALL not encrypt and SHALL fail closed with `503`.
 11. A key SHALL be retired (removed from the ring) only when no database row references it and every backup that may contain data encrypted under it has expired or been destroyed. The earliest retirement date is the completion date of re-encryption plus the maximum backup retention (35 days). Until then the key stays in the ring as `DECRYPT_ONLY` and in the key backup. (ND-9)
 12. THE system SHALL provide a key verification task that lists the key identifiers referenced by the database, confirms each is present in the ring, and test-decrypts every ciphertext, for use after restore and before key retirement.
+13. AFTER a database restore from a backup, THE system SHALL NOT continue to encrypt under the key that was active before the restore, because its usage counter may have been rolled back and so underestimate real use (RD-13). The restore procedure SHALL generate a new key, make it the only `ACTIVE` key in the key ring, and mark the previous key `DECRYPT_ONLY`, before the application accepts traffic. The one exception is a restore that is proved lossless, meaning the pre-restore database is still readable and its counters for the active key do not exceed the restored counters. Old keys SHALL remain in the ring for decryption of existing data until retired under R10.11. A key that has been `DECRYPT_ONLY` SHALL NEVER return to `ACTIVE`. The key verification task SHALL also check, for each key, that the number of ciphertext rows under it does not exceed its reserved total, and fail if it does.
 
 ### R11: Expiry, retention and cleanup
 
@@ -280,7 +338,7 @@ Acceptance criteria use EARS wording. Baseline references (FR-nnn, SIM-nnn, SCAL
 ### R13: Security, privacy, logging and metrics
 
 1. THE system SHALL apply rate limits as specified in R20. (5.3)
-2. THE system SHALL NOT write secret codes, guesses, request or response bodies of code and guess endpoints, nicknames, tokens, token hashes, idempotency keys of rotation, `Authorization` headers, admin tokens, encryption keys, fingerprints or decrypted values to logs, metrics, traces, diagnostic output, crash reports or error responses. (OD-2)
+2. THE system SHALL NOT write secret codes, guesses, request or response bodies of code, guess, rotation and rematch endpoints, nicknames, tokens, token hashes, idempotency keys of rotation, `Authorization` headers, admin tokens, encryption keys, fingerprints or decrypted values to logs, metrics, traces, diagnostic output, crash reports or error responses, nor store decrypted values in any persistent plaintext form (R10.7). (OD-2, CR-1)
 3. THE system SHALL be served over HTTPS in deployment, terminated at the reverse proxy.
 4. THE system SHALL collect only nicknames and operational data needed to run a game. Nicknames SHALL NOT be shown outside their game. (5.4)
 5. THE system SHALL keep administrative credentials separate from player credentials, and players SHALL have no administrative access. (5.3)
@@ -300,9 +358,10 @@ Acceptance criteria use EARS wording. Baseline references (FR-nnn, SIM-nnn, SCAL
 The simulator lives in `tools/simulator` and uses only the public REST API. Its behaviour is defined in `simulator-design.md`.
 
 1. THE simulator SHALL support configurable game count, concurrency, strategy and seed, and SHALL create two independent players per game. (SIM-001 to SIM-005)
-2. THE simulator SHALL check feedback against the reference implementation, check state transitions, detect unexpected responses, and verify idempotent guess retries and idempotent rotation retries including a simulated lost rotation response. (SIM-006 to SIM-008)
+2. THE simulator SHALL check feedback against the reference implementation, check state transitions, detect unexpected responses, and verify idempotent guess retries and idempotent rotation retries including a simulated lost rotation response and the display-security rules for nicknames. (SIM-006 to SIM-008)
 3. THE simulator SHALL record failures with seed and game number and SHALL replay one game from them. (SIM-009, 9.5)
 4. THE simulator SHALL write JSON and a human-readable summary with the metrics listed in baseline 9.5, and SHALL run as `deno task simulate`. (SIM-010 to SIM-012)
+5. THE simulator SHALL generate rotation idempotency keys deterministically in test deployments (CH-5): each key is a UUIDv4-compatible value (version and variant bits set) derived from the simulator seed, the game number, the player seat and the rotation index, so a replay of a game uses the same keys. Such keys are predictable by design. The simulator SHALL therefore refuse to run unless the operator passes an explicit test-deployment flag. Production clients SHALL always generate rotation keys from a cryptographically secure source.
 
 ### R16: Documentation and client tooling
 
@@ -324,33 +383,35 @@ The simulator lives in `tools/simulator` and uses only the public REST API. Its 
 3. THE project SHALL keep versioned database migrations and apply them in a controlled step. (5.6)
 4. THE project SHALL keep development and production configuration separate and keep secrets and encryption keys out of source control. (5.6, 14.3)
 5. THE system SHALL expose metrics for games created, active and completed, API request count and latency, subject to R13.8. (12.4)
+6. THE reverse proxy SHALL be Caddy built from a pinned, reproducible, documented custom build that includes the selected rate-limit module: exact versions pinned (Caddy, module, Go toolchain, builder image digest), dependencies locked by a committed `go.sum`, a build that produces the same binary digest twice, a recorded build provenance, and a documented maintenance procedure (`deployment.md` section 4.3). (RD-1, CR-4)
 
 ### R19: Licensing, repository layout and specification set
 
 1. THE repository layout SHALL follow baseline section 14.2 as amended by OD-1 (`design.md`). THE README SHALL show the same layout. (OD-1)
-2. THE repository SHALL carry the full AGPL-3.0-only text in `LICENSE`, an `SPDX-License-Identifier: AGPL-3.0-only` header on source files, a `NOTICE` file and a `CONTRIBUTING.md` with contribution terms before any outside contribution is accepted. (13.1, 13.4)
+2. THE repository SHALL carry the full AGPL-3.0-only text in `LICENSE`, an `SPDX-License-Identifier: AGPL-3.0-only` header on source files, a `NOTICE` file and a `CONTRIBUTING.md` with contribution terms before any outside contribution is accepted. Proposed versions of these three files exist at the repository root for gate 6 review. (13.1, 13.4, CR-5)
 3. THE project SHALL NOT assume that AGPL contributions grant commercial relicensing rights. (13.4)
 4. THE project SHALL use original names, artwork and symbols. (3.1, 13.5)
 5. THE specification artefacts SHALL reference one another, SHALL define each item once in the artefact that owns it, and SHALL be mapped in `traceability.md`.
 
 ### R20: Rate limiting
 
-1. THE system SHALL limit request rates in two layers: coarse per-IP limits at the reverse proxy, and finer per-IP and per-credential limits in the application (C-6, CL-4).
+1. THE system SHALL limit request rates in two layers: coarse per-IP limits at the reverse proxy, and finer per-IP and per-player limits in the application (C-6, CL-4).
 2. THE application layer SHALL keep its counters in PostgreSQL so that all instances share them. In-memory counters alone SHALL NOT be relied on. Redis SHALL NOT be required.
 3. EACH limit SHALL be a token bucket (capacity and refill rate) updated by a single atomic statement, so concurrent instances cannot oversubscribe a bucket.
-4. THE subject of an IP-based bucket SHALL be an HMAC of the client IP keyed by a secret, and the subject of a credential-based bucket SHALL be a hash of the presented token. The application SHALL NOT store IP addresses or plaintext tokens (RD-9).
+4. THE subject of an IP-based bucket SHALL be an HMAC of the client IP keyed by a secret, and the subject of a player-based bucket SHALL be a hash of the player id (CH-4). The player is found by the preliminary credential lookup (R8.11), so no bucket row is created for a token that does not exist. The application SHALL NOT store IP addresses or plaintext tokens (RD-9).
 5. THE application SHALL trust a forwarded client IP only from configured proxy addresses (RD-9).
-6. THE system SHALL reject a request over its limit with `429 RATE_LIMITED` and a `Retry-After` header, before doing any other work for IP buckets and at the authorisation point for credential buckets.
-7. IF the rate-limit store is unavailable, THEN THE system SHALL fail closed with `503` (RD-2).
-8. THE values SHALL be configurable. Recommended starting values are in `deployment.md` section 4 and need owner approval. (C-6)
-9. THE rate-limit statement SHALL run in its own short transaction for IP buckets and SHALL follow the lock order in `design.md` section 8 for credential buckets.
+6. THE system SHALL reject a request over its limit with `429 RATE_LIMITED` and a `Retry-After` header, before the request's database transaction begins and before any other work.
+7. IF the rate-limit store (PostgreSQL) is unavailable or a rate-limit statement fails, THEN THE system SHALL fail closed: the request SHALL be rejected with `503` and a `Retry-After` header, and SHALL NOT be processed without a rate-limit decision (RD-2).
+8. THE values SHALL be configurable. Recommended starting values are in `deployment.md` section 4.2 and need owner approval before implementation. (C-6, RD-2)
+9. EVERY rate-limit update SHALL run as its own short autocommit transaction before the request transaction begins, so that no rate-limit row lock is ever held together with a game lock or while waiting for one (`design.md` section 8). (CR-2)
+10. THE documentation SHALL state the privacy implications, retention and key management of the stored IP HMACs (`security-assessment.md` section 6.2, RD-9): what is stored, that it remains personal data in pseudonymised form, that rows are deleted after one hour idle, that the key is a separate secret that is rotated by replacing it, and that the table is excluded from backups (CH-2).
 
 ### R21: Administration, scheduling, backup and restore
 
 1. THE system SHALL provide two administrative interfaces only: metrics and cleanup. They SHALL be served on a separate admin listener reachable only on the internal network and SHALL NOT be routed by the public proxy (C-4, RD-4). They SHALL require the admin token.
 2. THE scheduled cleanup SHALL be run hourly by a dedicated `cleanup` service that runs the cleanup task from the same codebase. Application instances SHALL NOT schedule cleanup themselves and cleanup SHALL NOT depend on an HTTP call. THE admin cleanup endpoint SHALL exist for manual and dry runs and SHALL call the same code. (ND-8)
 3. THE system SHALL keep database backups for at most 35 days. (ND-8)
-4. THE project SHALL document and drill a database restore procedure and a key recovery procedure (`deployment.md` sections 5 and 6) before production use, including: restore, supplying the key ring, `keys:verify`, clearing rate-limit state, running cleanup before accepting traffic, and the effect of restore on credential state (RD-7).
+4. THE project SHALL document and drill a database restore procedure and a key recovery procedure (`deployment.md` sections 5 and 6) before production use, including: restore, supplying the key ring, activating a new key before traffic (R10.13), `keys:verify`, clearing rate-limit state, running cleanup before accepting traffic, and the effect of restore on credential state. No point-in-time recovery is provided in MVP 1. This is an accepted, documented operational risk to be reassessed before production deployment (RD-7, `deployment.md` section 12).
 5. THE project SHALL document key generation, backup, rotation, retirement and compromise procedures (`security-assessment.md` section 3.3, `deployment.md` section 5). (ND-9)
 
 ## Out of scope for MVP 1
@@ -377,6 +438,12 @@ Future white-label support is an architectural constraint only.
 - Cleanup deleting a game that has just been refreshed (R11.6).
 - A restore resurrecting deleted games or revoked tokens (R21.4, RD-7).
 - Replaying an idempotent request after the key ring has been rotated (R10.5).
+- Presenting an old rotated token for any operation other than a keyed rotation replay (R8.13).
+- Requesting a second rematch after the first rematch game was deleted (R9.4).
+- A results request on a game that is not `COMPLETED`: no ciphertext is read (R7.5).
+- An application transaction that encrypts and then fails or rolls back (the counter still counts the encryption, R10.10).
+- A database restore that rolls the key usage counter back (R10.13).
+- Two players presenting rematch capabilities at the same moment (the winner revokes the loser's capability, R9.9).
 
 ### Risks (see `security-assessment.md`)
 
