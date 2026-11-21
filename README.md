@@ -2,51 +2,40 @@ DuoCode
 
 Two players. Two secrets. One challenge.
 
-DuoCode is a modern, browser-first social code-breaking game.
+DuoCode is a modern, browser-first social code-breaking game for two players. Each player creates a secret code and challenges the other to crack it.
 
-Challenge a friend by sharing an invitation link. Each player creates a secret code and attempts to discover the other’s. Play at your own pace, without needing to be online at the same time.
+Games are asynchronous: players can make their moves whenever convenient, without needing to be online at the same time. An invitation link makes it easy to challenge a friend, colleague or group.
 
-No mandatory registration. No installation. Just share a link and play.
+DuoCode is being developed as an API-first platform, with a responsive web application as its initial user interface and the possibility of additional clients and white-label deployments in the future.
 
-DuoCode is the working product name. The project uses an original identity, artwork and visual design.
 
-The Idea
+Project status
 
-DuoCode takes the familiar appeal of code-breaking puzzles and gives it a social twist.
+🚧 Early development — API-first MVP
 
-Create a game and choose your secret code.
-Share an invitation link with a friend.
-Your friend joins and creates their secret code.
-Both players attempt to crack each other’s codes.
-Compare results and challenge each other again.
-Games are asynchronous, so players can take their turns whenever convenient.
+The first development milestone is a fully playable backend, accessible through its REST API. The game engine, persistence layer, API and automated test infrastructure will be validated before development of the graphical interface begins.
 
-Product Goals
+The project is currently under development. Product naming, visual identity and commercial arrangements remain subject to review.
 
-Simple invitation-based gameplay.
-Two-player asynchronous challenges.
-No mandatory user accounts.
-Responsive mobile and desktop browser support.
-Server-authoritative game rules.
-Secure handling of secret codes and player identities.
-API-first architecture.
-Thorough automated testing and game simulation.
-Future white-label and commercial deployment options.
-Game Rules
+The game
 
-The initial game configuration is:
+Two players each create a secret code and attempt to discover their opponent’s code.
 
-Parameter
+Each player has an independent sequence of guesses and receives feedback after every attempt.
 
-Value
+Initial game rules
+
+Rule
+
+Initial configuration
 
 Players
 
 2
 
-Code positions
+Code length
 
-4
+4 positions
 
 Available symbols
 
@@ -54,27 +43,50 @@ Available symbols
 
 Repeated symbols
 
-Allowed
+Permitted
 
 Maximum guesses
 
 10 per player
 
-Gameplay
+Feedback
 
-Asynchronous
+Exact and misplaced matches
 
-Feedback identifies exact matches and misplaced matches without revealing their positions.
+Feedback
 
-Both players independently attempt to solve the opponent’s code.
+Exact match: the correct symbol in the correct position.
+Misplaced match: the correct symbol in the wrong position.
+Feedback must account correctly for repeated symbols. Exact matches are counted first, and misplaced matches are calculated from the remaining unmatched symbols.
 
-The game concludes when both players have either solved their challenge or exhausted their attempts.
+Winning conditions
 
+Each player independently attempts to solve the opponent’s secret code.
+
+If both players solve their codes, the player using fewer guesses wins.
+If both solve in the same number of guesses, the result is a draw.
+If only one player solves their opponent’s code, that player wins.
+If neither player solves the code within the permitted attempts, the result is a draw.
+Secret codes remain private until the game is complete.
+
+The server is authoritative for game rules, feedback, state transitions and results.
+
+Product objectives
+
+DuoCode aims to provide:
+
+A simple way to create and share a two-player challenge.
+No account or application installation requirement for an invited opponent.
+Asynchronous gameplay.
+A responsive experience on desktop, tablet and mobile.
+A reliable, independently testable game engine.
+An API that can support future web, Android and iOS clients.
+An architecture that can evolve towards configurable and white-label deployments.
 Technology
 
-The initial architecture is deliberately simple and API-first.
+The initial technology choices are:
 
-Component
+Area
 
 Technology
 
@@ -90,9 +102,9 @@ HTTP framework
 
 Oak
 
-Backend
+API
 
-REST API
+REST
 
 API specification
 
@@ -106,150 +118,177 @@ Deployment
 
 Docker Compose
 
-Platform
+Reverse proxy
 
-Linux VPS
+Caddy or Nginx
 
-API testing
+Version control
 
-curl / Postman
+Git
 
-Automated testing
-
-Deno test framework
-
-CI/CD
+CI
 
 GitHub Actions
 
-Technology choices may evolve through the design review process.
+These choices provide a relatively lightweight, maintainable architecture without introducing unnecessary infrastructure at the MVP stage.
 
-Development Philosophy
+Architecture
 
-API first
+The application is designed around a modular structure, with the game engine independent of the HTTP framework and persistence implementation.
 
-The complete game must be playable through the REST API without a graphical interface.
+                  REST API
+                     |
+               API / Oak
+                     |
+        +------------+------------+
+        |            |            |
+    Game          Player       Results
+  Management    Management   Management
+        |            |            |
+        +------------+------------+
+                     |
+                 Game Engine
+                     |
+                Persistence
+                     |
+                PostgreSQL
+The game engine is responsible for the core rules, code comparison, feedback calculation, game progression and outcome determination.
 
-Independent game engine
+The API provides access to these capabilities without exposing implementation details of the engine or database.
 
-Game rules, code validation, feedback calculation and winner determination shall be independent of the HTTP framework and database.
+Application services should remain stateless, with PostgreSQL providing the authoritative persistent state.
 
-Server authoritative
+Development approach
 
-The server controls game state, validates moves and calculates feedback. Clients cannot determine or manipulate game outcomes.
+Development is deliberately divided into stages.
 
-Automated testing
+Phase 1 — Backend MVP
 
-Testing is part of the development process from the beginning.
+The first milestone is a complete game playable entirely through the REST API.
 
-Stateless architecture
+It will include:
 
-Application instances shall be independently deployable and capable of horizontal scaling.
+Game creation and management.
+Player identity and invitation handling.
+Secret-code submission.
+Guess submission and feedback.
+Game-state management.
+Results and completion handling.
+PostgreSQL persistence.
+OpenAPI documentation.
+Postman collection and environment examples.
+Curl-based usage examples.
+No graphical user interface is required for this phase.
 
-Incremental development
+Phase 2 — Automated verification
 
-Build a reliable game first. Introduce additional platform capabilities only when justified.
+Automated testing is a fundamental part of the project, not an activity deferred until the end.
 
-Automated Testing and Simulation
+Testing will cover:
 
-DuoCode will include a dedicated automated game simulation tool.
+Game-engine unit tests.
+Feedback calculation, including duplicate symbols.
+API integration tests.
+Database persistence.
+Game lifecycle and state transitions.
+Invalid and malicious requests.
+Concurrent guesses and duplicate submissions.
+Security and secret-code protection.
+Performance and load behaviour.
+An independent reference implementation of the feedback algorithm will be used to verify the production implementation.
 
-The simulator will exercise the public REST API using two independent player identities.
+Phase 3 — Game simulation
 
-Planned capabilities include:
+A configurable simulator will exercise the public REST API, rather than bypassing the API or manipulating the database directly.
 
-Automated complete game play.
-Random and systematic player strategies.
-Logic-based code-breaking strategies.
+It will support:
+
+Random guessing strategies.
+Systematic guessing strategies.
+Logic-based strategies.
 Configurable numbers of games.
-Concurrent game sessions.
-Deterministic random seeds.
-Independent feedback verification.
-Reproducible failed games.
-Machine-readable test results.
+Concurrent games.
+Deterministic random seeds and replay.
+Machine-readable JSON output.
+Human-readable reports.
 Example:
 
 deno task simulate \
   --games 1000 \
   --seed 12345 \
   --concurrency 20
-The simulator will complement unit tests, integration tests, API contract tests and load testing.
+Simulation results will include game completion statistics, wins and draws, average and maximum guesses, API errors, response latency, concurrency failures and unexpected outcomes.
 
-Architecture
+The objective is to expose problems in game logic, API behaviour, persistence and concurrency before the web interface is introduced.
 
-The initial system comprises:
+Phase 4 — Browser application
 
-API Clients
-   |
-   | REST / HTTPS
-   |
-Deno / Oak API
-   |
-   +-- Game Engine
-   |
-   +-- Game Management
-   |
-   +-- Player Management
-   |
-   +-- Results Management
-   |
-PostgreSQL
-The backend will be stateless, with PostgreSQL providing authoritative persistence.
+Once the backend has been validated, development will move to a responsive browser-based application.
 
-The API will support future browser, Android and iOS clients without requiring changes to the underlying game engine.
+The web application will provide:
 
-White-label and Commercial Opportunities
+Game creation.
+Nickname selection.
+Secret-code entry.
+Invitation-link generation and sharing.
+Guess entry and feedback presentation.
+Game status and results.
+Rematches.
+The application will use the same REST API developed and tested in the earlier phases.
 
-White-label capability is an important future product objective.
+A Progressive Web App approach may be used where appropriate.
 
-The architecture will keep the game engine, API, presentation and tenant configuration independent.
+Phase 5 — Future development
 
 Potential future capabilities include:
 
-Custom branding and logos.
-Custom colour schemes and visual themes.
-Custom domains.
+Additional game configurations.
+Configurable code lengths and symbol sets.
+Different game modes.
+Leaderboards and statistics.
+Clubs, societies and group challenges.
+Android and iOS applications.
+White-label and hosted commercial deployments.
+These are future opportunities, not requirements for the initial MVP.
+
+White-label and commercial direction
+
+The architecture should avoid assumptions that would prevent future white-label deployments.
+
+Potential customers could include clubs, societies, schools, corporations and organisations running promotional or event-based challenges.
+
+A white-label deployment might provide:
+
+Custom product name and logo.
+Custom colours and visual theme.
+Custom domain.
 Configurable game rules.
-Club and society editions.
-Educational editions.
-Corporate and promotional deployments.
-Independently hosted or managed installations.
-White-label functionality is not part of the initial MVP. The initial design will simply avoid architectural decisions that prevent it.
+Customer-specific welcome and information content.
+Hosted or independently hosted deployments.
+The initial release will remain a single-tenant application. Multi-tenancy will not be implemented prematurely, but the architecture should keep game logic, API, presentation and branding sufficiently separate to support it later.
 
-Licensing
+Any future multi-tenant implementation must include server-side tenant validation and logical data isolation.
 
-DuoCode is intended to be released under the GNU Affero General Public License v3.0 only (AGPL-3.0-only).
+Security and privacy
 
-The licence permits use, modification and distribution, including commercial use, subject to its terms.
+Security is part of the initial design.
 
-Where modified software is offered as a network service, the applicable AGPL source-code disclosure requirements must be respected.
+Key principles include:
 
-The project intends to preserve the possibility of separate commercial licensing, including white-label and proprietary deployments.
+Secret codes must never be exposed to the opposing player before game completion.
+The server must validate all player actions.
+Invalid requests must not consume attempts.
+Game-state transitions must be controlled by the server.
+Simultaneous requests must not corrupt game state.
+Duplicate submissions must not result in repeated actions.
+Player and invitation tokens must be protected.
+API access must not rely on client-side validation.
+Data retention and game expiry policies must be defined.
+The implementation should follow secure development practices appropriate to a public-facing web service.
 
-Commercial licensing will be subject to appropriate agreements with all relevant rights holders.
+Repository structure
 
-See LICENSE for the full licence text.
-
-Development Status
-
-Early development — requirements and architecture definition.
-
-Planned development phases:
-
-Requirements and architecture review.
-Independent game engine.
-REST API and PostgreSQL persistence.
-API integration testing.
-Automated game simulator.
-Backend MVP acceptance.
-Responsive browser application.
-PWA and beta release.
-Future white-label and commercial development.
-The first milestone is a complete two-player game playable entirely through curl or Postman.
-
-Repository Structure
-
-The repository is expected to evolve towards:
+The proposed repository layout is:
 
 duocode/
 ├── .github/
@@ -257,36 +296,94 @@ duocode/
 ├── .kiro/
 │   └── specs/
 │       └── duocode/
-├── backend/
-├── tools/
-│   ├── game-simulator/
-│   └── api-client/
-├── postman/
-├── openapi/
 ├── docs/
-├── web/
-├── deployment/
-├── README.md
-├── CONTRIBUTING.md
+├── src/
+│   ├── api/
+│   ├── game/
+│   ├── players/
+│   ├── games/
+│   ├── results/
+│   ├── persistence/
+│   └── shared/
+├── tests/
+│   ├── unit/
+│   ├── integration/
+│   ├── api/
+│   ├── security/
+│   └── simulation/
+├── simulator/
+├── postman/
+├── migrations/
+├── docker/
+├── deno.json
+├── deno.lock
+├── compose.yaml
 ├── LICENSE
-└── .gitignore
-Collaboration
+└── README.md
+The structure may evolve as the implementation develops, but separation of the game engine, API, persistence and testing tools should be maintained.
 
-DuoCode is being developed collaboratively.
+Development workflow
 
-The project uses:
+The project uses a specification-led and review-driven development process.
 
-Kiro for requirements, architecture and implementation planning.
-GitHub for source control, collaboration and pull requests.
-GitHub Copilot for independent design and code reviews.
-Automated CI for build and test verification.
-Architectural and product decisions remain the responsibility of the project collaborators.
+The intended workflow is:
 
-Project Status
+Define and refine requirements using Kiro.
+Produce architecture and implementation specifications.
+Break work into manageable tasks.
+Implement changes on Git branches.
+Submit changes through GitHub pull requests.
+Use independent review, including GitHub Copilot, to identify omissions and potential problems.
+Run automated checks through CI.
+Review and approve changes before merging.
+Kiro is used to support requirements, design and implementation. Independent reviews provide an additional check on architecture, security, testing and maintainability.
 
-The current priority is to establish a robust, thoroughly tested API-only game before developing the browser interface.
+Important design decisions should be documented so that the project remains understandable and maintainable by both collaborators.
 
-Build the game first. Prove the engine. Validate the API. Then build the experience.
+Licensing
+
+The intended community licence is:
+
+GNU Affero General Public License v3.0 only (AGPL-3.0-only).
+
+The intention is to make the community version available under a strong copyleft licence, including the network-use provisions of the AGPL.
+
+Commercial licensing may also be offered separately for organisations requiring proprietary modifications, closed-source integrations or deployments outside the terms of the community licence.
+
+Any dual-licensing arrangement will depend on the project having the necessary rights to license all relevant contributions. Contributor and intellectual-property arrangements must therefore be established before accepting external contributions or offering commercial licences.
+
+The AGPL licence does not grant rights to the DuoCode name, logo or other project branding.
+
+The full AGPL licence text must be included in the repository’s LICENSE file before public release.
+
+Contributing
+
+The project is being developed collaboratively.
+
+Contribution guidelines, coding standards, development setup instructions and issue-management procedures will be added as the implementation progresses.
+
+Before submitting contributions, please ensure that you have the right to submit the work under the project’s licensing arrangements.
+
+Current priorities
+
+The immediate priorities are:
+
+Finalise the backend architecture and API design.
+Implement the independent game engine.
+Implement game and player management.
+Introduce PostgreSQL persistence.
+Build the automated test suite.
+Develop the REST API and Postman collection.
+Implement the simulator.
+Validate complete games through the public API.
+The browser application will follow once the backend and game behaviour have been thoroughly tested.
 
 
-DuoCode — Two players. Two secrets. One challenge.
+Project principle
+
+Keep the game simple, the architecture clean and the implementation thoroughly tested.
+
+DuoCode should be easy to play, straightforward to operate and flexible enough to grow beyond its initial two-player game.
+
+
+Sent from my iPhone
