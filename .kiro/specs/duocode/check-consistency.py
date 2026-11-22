@@ -306,9 +306,13 @@ def pos(pat):
     for n,t in steps:
         if re.search(pat,t): return int(n)
     return None
-pc=pos(r'Encryption claim.*pre-encryption check'); pb=pos(r'^Begin transaction'); pk=pos(r'Commit-time check'); pa=pos(r'^Apply changes')
-if None in (pc,pb,pk,pa): pr.append(f'missing step: claim={pc} begin={pb} apply={pa} commit-check={pk}')
-elif not (pc<pb<pa<pk): pr.append(f'wrong order: claim={pc} begin={pb} apply={pa} commit-check={pk}')
+pc=pos(r'Encryption claim.*pre-encryption check'); pb=pos(r'^Begin transaction'); pk=pos(r'Commit-time check'); pa=pos(r'^Apply changes'); pm=pos(r'^\*\*Commit\.\*\*')
+if None in (pc,pb,pk,pa,pm): pr.append(f'missing step: claim={pc} begin={pb} apply={pa} commit-check={pk} commit={pm}')
+elif not (pc<pb<pa<pk<pm): pr.append(f'wrong order: claim={pc} begin={pb} apply={pa} commit-check={pk} commit={pm}')
+for n,t in steps:
+    if int(n)!=pm and int(n)!=pk and re.search(r'\bcommit(s|ted)?\b',t,re.I) and not re.search(r'commit-time|before `COMMIT`|had already',t,re.I):
+        pr.append(f'step {n} commits outside the Commit step: {t[:60]}')
+if pm is not None and re.search(r'only for|skips this step',dict(steps)[str(pm)],re.I): pr.append('the Commit step is conditional')
 if [int(n) for n,_ in steps]!=list(range(1,len(steps)+1)): pr.append('steps not numbered 1..n')
 check('C26 state-machine 1.3 orders claim and pre-encryption check before BEGIN and the commit-time check before COMMIT',pr)
 # 22 OpenAPI lint

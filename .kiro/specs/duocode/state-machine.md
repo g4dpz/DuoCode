@@ -65,13 +65,14 @@ For a state-changing request the service applies checks in this order. The first
 9. Player rules (`ALREADY_SOLVED`, `ATTEMPTS_EXHAUSTED`, `CODE_ALREADY_SET`, `REMATCH_ALREADY_CREATED`).
 10. **Encryption availability** (only for an operation that needs a fresh encryption): if the operation holds no claimed unit (the pre-encryption check failed, the key is sealed or at the hard stop, or a reservation was refused, all in step 4), end with `503 SERVICE_UNAVAILABLE` and `Retry-After`. Nothing has been written. Steps 7 to 9 are unaffected, so an idempotent replay, a conflict and every rule rejection still get their normal answer even when no unit is available (`design.md` section 9.1).
 11. Apply changes, writing any ciphertext with the claimed units (each unit is consumed before the cipher is called).
-12. **Commit-time check** (only for a transaction that wrote ciphertext; CR-23, `database-schema.md` 6.2): immediately before `COMMIT`, run `SELECT sealed FROM key_usage WHERE key_id = $1 FOR SHARE`. If the key has been sealed, roll back and end with `503 SERVICE_UNAVAILABLE`. The consumed units stay counted. Otherwise commit. After the request, return any claimed units it did not consume.
+12. **Commit-time check** (only for a transaction that wrote ciphertext; CR-23, `database-schema.md` 6.2): immediately before `COMMIT`, run `SELECT sealed FROM key_usage WHERE key_id = $1 FOR SHARE`. If the key has been sealed, roll back and end with `503 SERVICE_UNAVAILABLE`. The consumed units stay counted. A transaction that wrote no ciphertext skips this step.
+13. **Commit.** Every successful write transaction commits here, whether or not it wrote ciphertext. After the request, return any claimed units it did not consume.
 
 For operations without a game id in the path (create rematch), step 2 finds the original game, step 5 locks it, and step 6 re-validates under the lock. Only the step 6 result counts.
 
 A retry of the transaction (`design.md` 8.2) is a fresh attempt: it leaves the transaction and repeats from step 4 with a new claim and a new pre-encryption check.
 
-Operations without a credential (create game, join) skip steps 2 and 6 and use the IP buckets only. Create game and join encrypt nothing, so they also skip steps 4, 10 and 12. Join authorises the invitation inside the transaction after the game lock, by the same rules.
+Operations without a credential (create game, join) skip steps 2 and 6 and use the IP buckets only. Create game and join encrypt nothing, so they also skip steps 4, 10 and 12, and commit at step 13. Join authorises the invitation inside the transaction after the game lock, by the same rules.
 
 ### 1.4 Reads (CR-2)
 
