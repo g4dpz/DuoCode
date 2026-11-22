@@ -38,7 +38,8 @@ Revision 3.1 review package: `revision-3.1-review-package.md` (change summary fr
 
 ## Phase 2: Repository scaffold and CI
 
-- [ ] 2.1 Create the directory layout in `design.md`, section 3 (`backend/`, `tools/`, `openapi/`, `docs/`, `deployment/`, `postman/`). No `frontend/` yet. (R19.1)
+- [x] 2.1 Create the directory layout in `design.md`, section 3 (`backend/`, `tools/`, `openapi/`, `docs/`, `deployment/`, `postman/`). No `frontend/` yet. (R19.1)
+  - **Done 2026-11-22** (PR #19). Leaf directories hold an empty `.gitkeep` until their files arrive.
 - [ ] 2.2 Verify that `LICENSE`, `NOTICE`, `CONTRIBUTING.md` and `.gitignore` (including `.env`, `secrets/`, key files) are present exactly as approved at gate 6, and add the SPDX header check. They exist as approved at Gate 6. (R19.2)
 - [ ] 2.3 Create `backend/deno.json` with tasks `fmt`, `lint`, `check`, `test`, `migrate`, `cleanup`, `reencrypt`, `keys:generate`, `keys:verify`, and the `tools/simulator` task `simulate`. Pin imports and commit `deno.lock`. (R18)
 - [ ] 2.4 Typed configuration module with start-up validation of every key in `design.md`, section 13 (non-positive TTLs, replay window and rate limits rejected, secrets never printed, trusted proxies required in production). (R11.1, R18.4)
