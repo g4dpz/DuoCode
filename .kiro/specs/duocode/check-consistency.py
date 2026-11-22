@@ -145,8 +145,19 @@ pr=[]
 if sha!='0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0': pr.append('LICENSE checksum differs from FSF text recorded')
 if b'GNU AFFERO GENERAL PUBLIC LICENSE' not in lic or b'Version 3, 19 November 2007' not in lic: pr.append('LICENSE header wrong')
 if 'AGPL-3.0-only' not in files['NOTICE']: pr.append('NOTICE lacks AGPL-3.0-only')
-if 'DRAFT' not in files['NOTICE'] or 'DRAFT' not in files['CONTRIBUTING.md']: pr.append('draft banner missing')
-check(f'C13 licensing artefacts present, LICENSE is the FSF AGPL-3.0 text (sha256 {sha[:16]}...), NOTICE names AGPL-3.0-only',pr)
+g6=bool(re.search(r'^- \[x\] 1\.6 ',files['tasks.md'],re.M))
+if g6:
+    # after Gate 6: no draft banner and no placeholders; NOTICE names exactly the LI-1 holders
+    for fn in ('NOTICE','CONTRIBUTING.md'):
+        if 'DRAFT' in files[fn]: pr.append(f'{fn} still carries the draft banner after Gate 6')
+        if re.search(r'\[(LI-\d|COPYRIGHT HOLDER)',files[fn]): pr.append(f'{fn} still has a placeholder after Gate 6')
+    li1=re.search(r'^\| LI-1 \|[^|]*\|[^|]*\| ([^|]*?)\. No affiliation shown \|',req,re.M)
+    holders=re.findall(r'^Copyright \(C\) \d{4} (.+)$',files['NOTICE'],re.M)
+    if not li1: pr.append('requirements.md LI-1 has no recorded answer')
+    elif set(holders)!=set(x.strip() for x in li1.group(1).split(' and ')): pr.append(f'NOTICE holders {holders} differ from LI-1 ({li1.group(1)})')
+    if 'LI-3' not in files['CONTRIBUTING.md']: pr.append('CONTRIBUTING.md does not record the outstanding legal review LI-3')
+elif 'DRAFT' not in files['NOTICE'] or 'DRAFT' not in files['CONTRIBUTING.md']: pr.append('draft banner missing')
+check(f'C13 licensing artefacts present, LICENSE is the FSF AGPL-3.0 text (sha256 {sha[:16]}...), NOTICE names AGPL-3.0-only, and after Gate 6 no draft banner or placeholder remains and NOTICE names the LI-1 holders',pr)
 # 14 workflows yaml
 pr=[]
 for f in glob.glob(root+'.github/workflows/*.yml'):

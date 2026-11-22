@@ -11,7 +11,7 @@ The **Status** column records **decision provenance**: where the requirement cam
 | Code | Meaning |
 |---|---|
 | **A** | The owner made an explicit decision behind this requirement (OD, ND, C, CL, CR, RD or CH) |
-| **A+RD** | As A, but part of the requirement still depends on an input from the owners (only the Gate 6 licensing inputs LI-1 to LI-4 remain) |
+| **A+RD** | As A, but part of the requirement still depends on an input from the owners (none remain: the Gate 6 inputs LI-1 to LI-4 were given on 2026-11-22, with LI-3 recorded as an outstanding legal item) |
 | **B** | Taken from the baseline requirements without a separate owner decision. It was approved explicitly as part of Gate 1 |
 
 Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and state machine, 1.5 security assessment, 1.6 licensing and contributor arrangements. Current state: **Gates 1.1 to 1.5 signed off on 2026-11-22** (R19 licensing text pending 1.6; 1.2 with the key command-list wording in `deployment.md` 2.1 and 6.3 and `design.md` section 3 re-confirmed the same day (see `tasks.md` 1.2)). Gate 1.6 **not signed off**. A requirement is fully approved only when every gate listed in its row is signed off.
@@ -38,7 +38,7 @@ Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and 
 | R16 | Documentation and client tooling | `requirements.md`, `design.md` (section 3) | None | None | TS-DOC | 1.1 | B |
 | R17 | Testing and CI | `requirements.md`, `test-strategy.md` | None | None | TS-DOC, CI job definitions (`test-strategy.md` section 17) | 1.1, 1.5 | A (CL-8) |
 | R18 | Deployment and operability | `requirements.md`, `deployment.md` (sections 1, 4.3), `design.md` (section 13) | `getHealth` | Shared state in PostgreSQL, `rate_limits` | TS-OPS, TS-RATE, TS-LOAD | 1.1, 1.2 | A (RD-1 approved: R18.6 reproducible Caddy build). Other criteria B |
-| R19 | Licensing, layout, specification set | `requirements.md`, `design.md` (section 3), `traceability.md`, `README.md`, `LICENSE`, `NOTICE`, `CONTRIBUTING.md` | None | None | TS-DOC | 1.1, 1.2, 1.6 | A+RD (OD-1, OD-8, CR-5, CR-6 approved. Licensing text awaits LI-1 to LI-4) |
+| R19 | Licensing, layout, specification set | `requirements.md`, `design.md` (section 3), `traceability.md`, `README.md`, `LICENSE`, `NOTICE`, `CONTRIBUTING.md` | None | None | TS-DOC | 1.1, 1.2, 1.6 | A (OD-1, OD-8, CR-5, CR-6 approved. Licensing text approved at Gate 6 with LI-1 to LI-4; legal review LI-3 outstanding) |
 | R20 | Rate limiting | `requirements.md`, `design.md` (section 11), `database-schema.md` (section 6.1), `deployment.md` (sections 4.2, 4.3) | All operations (`RATE_LIMITED`, `SERVICE_UNAVAILABLE`) | `rate_limits` primary key and atomic upsert | TS-RATE, TS-CONC-15, TS-CONC-18, TS-SEC | 1.1, 1.2, 1.4, 1.5 | A (C-6, RD-1, RD-2 with conditions, RD-9, CH-2, CH-4 approved) |
 | R21 | Administration, scheduling, backup, restore | `requirements.md`, `deployment.md` (sections 1, 5, 6, 7, 12), `security-assessment.md` (section 3.6) | `getMetrics`, `runCleanup` (admin server entry) | None | TS-OPS, TS-ENC, TS-RET | 1.1, 1.2, 1.5 | A (RD-4, RD-7, RD-13 approved) |
 
@@ -178,5 +178,5 @@ Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and 
 | CH-4 | R20.4 | `database-schema.md` section 6.1 |
 | CH-5 | R15.5 | `simulator-design.md` |
 | CH-6 | R18.6 | `deployment.md` section 4.3 |
-| LI-1 to LI-4 | R19.2 | `NOTICE`, `CONTRIBUTING.md` (inputs from the owners, not decisions) |
+| LI-1 to LI-4 | R19.2 | `NOTICE`, `CONTRIBUTING.md` (inputs from the owners, not decisions; given 2026-11-22, LI-3 outstanding) |
 | OI-1, OI-2 | R18.6, R21.3 | `deployment.md` 4.3, 5 (operational inputs from the owners, not decisions) |

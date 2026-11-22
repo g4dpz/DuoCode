@@ -2,18 +2,18 @@
 
 History: the revision 3.1 content was published on `spec/revision-3.1-review` and merged to `main` (PR #1, `b88580d`). The strict hard-stop correction (CR-9, section 3A) is on branch `spec/key-usage-strict-hard-stop`, created from that `main`. Commit hashes are reported with the branches, because a file cannot contain its own commit hash.
 
-The project stays in specification and approval mode. This package contains no application code, no database migration and no implementation task. **Gates 1 to 5 are signed off. Gate 6 is not.** The architecture (Deno, TypeScript, Oak, PostgreSQL, Docker Compose, Caddy) is unchanged.
+The project stays in specification and approval mode. This package contains no application code, no database migration and no implementation task. **All six gates are signed off. Task 1.9 (Phase 1 complete) is not.** The architecture (Deno, TypeScript, Oak, PostgreSQL, Docker Compose, Caddy) is unchanged.
 
 ## 1. Gate status
 
 | Gate | Task | Subject | Status |
 |---|---|---|---|
-| 1 | 1.1 | Requirements | **Signed off 2026-11-22**, David Johnson (G4DPZ), as at `53c46df`. R19 licensing text pending Gate 6 |
+| 1 | 1.1 | Requirements | **Signed off 2026-11-22**, David Johnson (G4DPZ), as at `53c46df`. R19 licensing text approved at Gate 6 |
 | 2 | 1.2 | Architecture | **Signed off 2026-11-22**, David Johnson (G4DPZ), as at `bcba9f6`, as written (online rotation kept). OI-1 and OI-2 open. CR-24 command-list wording in `deployment.md` 2.1 and 6.3 and `design.md` section 3 **re-confirmed 2026-11-22** |
 | 3 | 1.3 | OpenAPI specification | **Signed off 2026-11-22**, David Johnson (G4DPZ), as `openapi.yaml` draft 6 (CR-22: `500`/`503` on every operation, `429` on admin) |
 | 4 | 1.4 | Database schema and state machine | **Signed off 2026-11-22**, David Johnson (G4DPZ), schema as at `e9c01eb`, state machine with CR-23 (write order includes the claim, pre-encryption check and commit-time check) |
 | 5 | 1.5 | Security assessment | **Signed off 2026-11-22**, David Johnson (G4DPZ), `security-assessment.md` and `test-strategy.md` at `cbc43bf` plus the alignment fixes in CR-24 (threats T1 to T39) |
-| 6 | 1.6 | Licensing files and contributor arrangements | Not signed off. Inputs LI-1 to LI-4 outstanding |
+| 6 | 1.6 | Licensing files and contributor arrangements | **Signed off 2026-11-22**, David Johnson (G4DPZ). LI-1, LI-2 and LI-4 given; LI-3 (legal review) outstanding |
 | Sign-off | 1.9 | Phase 1 complete, Phase 2 authorised | Not authorised |
 
 ## 2. What to read for each gate
@@ -360,23 +360,23 @@ The logical `pg_dump` restore test is no longer outstanding: it runs on PostgreS
 | File | State |
 |---|---|
 | `LICENSE` | Official FSF GNU AGPL v3 text, 34,523 bytes, SHA-256 `0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0`. Unmodified |
-| `NOTICE` | Draft banner. Copyright lines are placeholders. **No names are asserted** (my earlier draft named one person, which I have removed) |
-| `CONTRIBUTING.md` | Draft banner. Contribution terms proposed. External contributions closed until approved. Bracketed placeholders for the open inputs. Not legal advice |
+| `NOTICE` | Approved at Gate 6. Copyright holders David Johnson and Mike Hartley (LI-1) |
+| `CONTRIBUTING.md` | Approved at Gate 6. No separate contributor licence agreement (LI-2). Legal review outstanding (LI-3). Security contact by post (LI-4). External contributions closed until the agreement-recording mechanism exists. Not legal advice |
 
-Inputs only you can give. I have not invented any of them:
+Inputs given by David Johnson (G4DPZ) on 2026-11-22:
 
-| ID | Input | Where it appears |
-|---|---|---|
-| LI-1 | Exact copyright holder names, and any affiliation to show | `NOTICE` (two placeholders) |
-| LI-2 | Whether a contributor licence agreement is required before outside contributions | `CONTRIBUTING.md` section 2 |
-| LI-3 | Legal review of the contribution terms and the dual-licensing position | `CONTRIBUTING.md` section 2 |
-| LI-4 | Security contact address | `CONTRIBUTING.md` section 4 |
+| ID | Input | Where it appears | Answer |
+|---|---|---|---|
+| LI-1 | Exact copyright holder names, and any affiliation to show | `NOTICE` | David Johnson and Mike Hartley |
+| LI-2 | Whether a contributor licence agreement is required before outside contributions | `CONTRIBUTING.md` section 2 | No |
+| LI-3 | Legal review of the contribution terms and the dual-licensing position | `CONTRIBUTING.md` section 2 | Outstanding |
+| LI-4 | Security contact address | `CONTRIBUTING.md` section 4 | 96 Summerfields Avenue, Halesowen, B62 9NR |
 
 ## 7. Outstanding issues
 
 1. No technical decision is pending. RD-14 is approved.
-2. Gates 1 (requirements), 2 (architecture), 3 (OpenAPI), 4 (schema and state machine) and 5 (security assessment) are signed off as of 2026-11-22, with R19's licensing text pending Gate 6. Gate 6 awaits your explicit sign-off. Gate 2 was reopened for the CR-24 command-list wording in `deployment.md` 2.1 and 6.3 and `design.md` section 3, and re-confirmed on 2026-11-22. Operational inputs OI-1 (Caddy build owner) and OI-2 (backup provider) are open.
-3. LI-1 to LI-4 (section 6).
+2. Gates 1 (requirements), 2 (architecture), 3 (OpenAPI), 4 (schema and state machine) and 5 (security assessment) are signed off as of 2026-11-22, and Gate 6 (licensing) is signed off with LI-3 outstanding. Task 1.9 awaits your explicit sign-off. Gate 2 was reopened for the CR-24 command-list wording in `deployment.md` 2.1 and 6.3 and `design.md` section 3, and re-confirmed on 2026-11-22. Operational inputs OI-1 (Caddy build owner) and OI-2 (backup provider) are open.
+3. LI-3, legal review of the contribution terms and the dual-licensing position (section 6). With no separate contributor licence agreement (LI-2), commercial relicensing of outside contributions rests on `CONTRIBUTING.md` section 2 point 2.
 4. The (APP) tests and the restore and rotation drills with real tools (section 5.4).
 5. Proposals approved at Gate 2 (no further approval needed): proxy access logs 14 days with no client IP, backups encrypted to both founders and stored off the VPS, and the 7-day target for high or critical proxy advisories. Operational inputs still needed: OI-1, the named owner of the Caddy build maintenance, and OI-2, the off-VPS backup provider. Implementation tasks, not approvals: re-verifying the Caddy pins at build time (task 9.3), and the privacy notice and UK GDPR wording.
 6. The Copilot review loop on PR #2 is closed by owner decision after round 11. One regression-check review of the CR-21 commit is requested. Task 9.6a carries the one unresolved concern.

@@ -3,7 +3,7 @@
 Source: `DuoCode-Requirements` v2.0 (baseline, dated 21 November 2026) and the owner decisions in the decision register.
 Scope: MVP 1, a backend-only game playable through the REST API. The web application, PWA, white-label and multi-tenant work are out of scope.
 
-Status: **Gate 1 approved by the owner on 2026-11-22 (David Johnson, G4DPZ), as at `main` commit `53c46df`. R19's licensing text stays pending Gate 6. Gate 2 (architecture) approved on 2026-11-22, with the key command-list wording in `deployment.md` 2.1 and 6.3 and `design.md` section 3 re-confirmed the same day (see `tasks.md` 1.2). Gate 3 (OpenAPI contract) approved on 2026-11-22. Gate 4 (database schema and state machine) approved on 2026-11-22. Gate 5 (security assessment) approved on 2026-11-22.** No implementation is authorised. Implementation stays unauthorised until all six Phase 1 gates in `tasks.md` are explicitly signed off. A change to this file after approval reopens Gate 1 for the changed requirement.
+Status: **Gate 1 approved by the owner on 2026-11-22 (David Johnson, G4DPZ), as at `main` commit `53c46df`. R19's licensing text was approved at Gate 6. Gate 2 (architecture) approved on 2026-11-22, with the key command-list wording in `deployment.md` 2.1 and 6.3 and `design.md` section 3 re-confirmed the same day (see `tasks.md` 1.2). Gate 3 (OpenAPI contract) approved on 2026-11-22. Gate 4 (database schema and state machine) approved on 2026-11-22. Gate 5 (security assessment) approved on 2026-11-22. Gate 6 (licensing and contributor arrangements) approved on 2026-11-22, with the legal review LI-3 recorded as an outstanding legal item.** No implementation is authorised. Implementation stays unauthorised until all six Phase 1 gates in `tasks.md` are explicitly signed off. A change to this file after approval reopens Gate 1 for the changed requirement.
 
 Revision history: revision 2 added the owner decisions OD-1 to OD-10. Revision 3 applied the owner review of revision 2. Revision 3.1 applies the owner review of revision 3: technical corrections CR-1 to CR-8, the RD-1 to RD-13 decisions, the CH-1 to CH-6 choices with the owner's qualifications, and the licensing artefacts. It does not change the architecture or widen MVP 1. The owner has approved all technical decisions below. Only the owner inputs listed under "Operational inputs still needed" (OI-1, OI-2) and "Inputs still needed for gate 6" (LI-1 to LI-4) remain open. The change summary is in `revision-3.1-review-package.md`.
 
@@ -24,7 +24,7 @@ This file owns the requirements and the decision register. Other artefacts own t
 | `simulator-design.md` | Simulator behaviour and replay |
 | `deployment.md` | Compose stack, secrets, rate-limit values, backups, restore, key recovery, scheduling |
 | `revision-3.1-review-package.md` | Change summary from revision 3, verification results, remaining decisions |
-| `LICENSE`, `NOTICE`, `CONTRIBUTING.md` (repository root) | Proposed licensing artefacts for gate 6 review |
+| `LICENSE`, `NOTICE`, `CONTRIBUTING.md` (repository root) | Licensing artefacts, approved at Gate 6 |
 | `tasks.md` | Phased tasks and approval gates |
 
 ## Glossary
@@ -191,16 +191,16 @@ None of the technical decisions is pending. RD-14 was approved. Approval of the 
 | OI-1 | The founding collaborator who owns Caddy build maintenance | `deployment.md` 4.3 |
 | OI-2 | The off-VPS backup storage provider | `deployment.md` 5 |
 
-### Inputs still needed for gate 6 (licensing)
+### Gate 6 licensing inputs (LI-1 to LI-4)
 
-These are not technical decisions. The specification does not invent them: the files carry placeholders.
+These are not technical decisions. They were given by David Johnson (G4DPZ) on 2026-11-22. LI-3 remains an outstanding legal item.
 
-| ID | Input needed from the owners | Where it shows |
-|---|---|---|
-| LI-1 | Exact copyright holder names (and any affiliation to show) | `NOTICE` |
-| LI-2 | Whether a contributor licence agreement is required before outside contributions | `CONTRIBUTING.md` 1, 2 |
-| LI-3 | Legal review of the contribution terms and the dual-licensing position | `CONTRIBUTING.md` 2 |
-| LI-4 | Security contact address | `CONTRIBUTING.md` 4 |
+| ID | Input from the owners | Where it shows | Owner answer |
+|---|---|---|---|
+| LI-1 | Exact copyright holder names (and any affiliation to show) | `NOTICE` | David Johnson and Mike Hartley. No affiliation shown |
+| LI-2 | Whether a contributor licence agreement is required before outside contributions | `CONTRIBUTING.md` 1, 2 | No. The section 2 terms are the contribution terms |
+| LI-3 | Legal review of the contribution terms and the dual-licensing position | `CONTRIBUTING.md` 2 | Outstanding. With no separate agreement, commercial relicensing of outside contributions rests on section 2 point 2 |
+| LI-4 | Security contact address | `CONTRIBUTING.md` 4 | 96 Summerfields Avenue, Halesowen, B62 9NR (postal) |
 
 ## Requirements
 
@@ -429,7 +429,7 @@ The simulator lives in `tools/simulator` and uses only the public REST API. Its 
 ### R19: Licensing, repository layout and specification set
 
 1. THE repository layout SHALL follow baseline section 14.2 as amended by OD-1 (`design.md`). THE README SHALL show the same layout. (OD-1)
-2. THE repository SHALL carry the full AGPL-3.0-only text in `LICENSE`, an `SPDX-License-Identifier: AGPL-3.0-only` header on source files, a `NOTICE` file and a `CONTRIBUTING.md` with contribution terms before any outside contribution is accepted. Proposed versions of these three files exist at the repository root for gate 6 review. (13.1, 13.4, CR-5)
+2. THE repository SHALL carry the full AGPL-3.0-only text in `LICENSE`, an `SPDX-License-Identifier: AGPL-3.0-only` header on source files, a `NOTICE` file and a `CONTRIBUTING.md` with contribution terms before any outside contribution is accepted. These three files exist at the repository root and were approved at Gate 6. (13.1, 13.4, CR-5)
 3. THE project SHALL NOT assume that AGPL contributions grant commercial relicensing rights. (13.4)
 4. THE project SHALL use original names, artwork and symbols. (3.1, 13.5)
 5. THE specification artefacts SHALL reference one another, SHALL define each item once in the artefact that owns it, and SHALL be mapped in `traceability.md`.
