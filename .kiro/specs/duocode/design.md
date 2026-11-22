@@ -376,4 +376,4 @@ Validation: TTLs, replay window, batch size and rate-limit values must be positi
 
 ## 16. Remaining decisions
 
-All technical decisions are approved (decision register in `requirements.md`). Only the gate 6 licensing inputs LI-1 to LI-4 are outstanding, and they do not affect the design.
+All technical decisions are approved (decision register in `requirements.md`). This design was approved at Gate 2 on 2026-11-22. Only the Gate 6 licensing inputs LI-1 to LI-4 and the operational inputs OI-1 and OI-2 are outstanding, and they do not affect the design.

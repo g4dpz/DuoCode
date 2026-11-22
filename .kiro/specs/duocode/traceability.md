@@ -14,7 +14,7 @@ The **Status** column records **decision provenance**: where the requirement cam
 | **A+RD** | As A, but part of the requirement still depends on an input from the owners (only the Gate 6 licensing inputs LI-1 to LI-4 remain) |
 | **B** | Taken from the baseline requirements without a separate owner decision. It was approved explicitly as part of Gate 1 |
 
-Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and state machine, 1.5 security assessment, 1.6 licensing and contributor arrangements. Current state: **Gate 1.1 signed off on 2026-11-22** (R19 licensing text pending 1.6). Gates 1.2 to 1.6 **not signed off**. A requirement is fully approved only when every gate listed in its row is signed off.
+Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and state machine, 1.5 security assessment, 1.6 licensing and contributor arrangements. Current state: **Gates 1.1 and 1.2 signed off on 2026-11-22** (R19 licensing text pending 1.6). Gates 1.3 to 1.6 **not signed off**. A requirement is fully approved only when every gate listed in its row is signed off.
 
 ## 2. Matrix
 
@@ -175,3 +175,4 @@ Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and 
 | CH-5 | R15.5 | `simulator-design.md` |
 | CH-6 | R18.6 | `deployment.md` section 4.3 |
 | LI-1 to LI-4 | R19.2 | `NOTICE`, `CONTRIBUTING.md` (inputs from the owners, not decisions) |
+| OI-1, OI-2 | R18.6, R21.3 | `deployment.md` 4.3, 5 (operational inputs from the owners, not decisions) |

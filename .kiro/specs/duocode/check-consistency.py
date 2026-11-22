@@ -43,7 +43,7 @@ check(f'C03 every TS group and TS-CONC id referenced is defined ({len(defined)} 
 # 4 decision ids
 reg=req
 ids={}
-for k in ('ND','C','CL','RD','OD','CR','CH'):
+for k in ('ND','C','CL','RD','OD','CR','CH','OI','LI'):
     nums=[int(x) for x in re.findall(rf'^\| {k}-(\d+) \|',req,re.M)]
     ids[k]=max(nums) if nums else 0   # the register is the source of truth; any reference above it is unknown
 pr=[]
@@ -184,12 +184,12 @@ check('C18 OpenAPI rotation key pattern accepts v4 UUIDs and rejects v1 and wron
 # 19 decision register vs traceability decision map
 def expand(text):
     out=set()
-    for m in re.finditer(r'\b(OD|ND|CL|CR|RD|CH|LI|C)-(\d+)(?: to (?:OD|ND|CL|CR|RD|CH|LI|C)-(\d+))?',text):
+    for m in re.finditer(r'\b(OD|ND|CL|CR|RD|CH|LI|OI|C)-(\d+)(?: to (?:OD|ND|CL|CR|RD|CH|LI|OI|C)-(\d+))?',text):
         a=int(m.group(2)); b=int(m.group(3)) if m.group(3) else a
         for n in range(a,b+1): out.add(f'{m.group(1)}-{n}')
     return out
 regids=set()
-for m in re.finditer(r'^\| ((?:OD|ND|CL|CR|RD|CH|LI|C)-\d+) \|',req,re.M): regids.add(m.group(1))
+for m in re.finditer(r'^\| ((?:OD|ND|CL|CR|RD|CH|LI|OI|C)-\d+) \|',req,re.M): regids.add(m.group(1))
 mapsec=tr[tr.index('## 4. Decision to requirement map'):]
 mapids=set()
 for m in re.finditer(r'^\| ([^|]+) \|',mapsec,re.M): mapids|=expand(m.group(1))
