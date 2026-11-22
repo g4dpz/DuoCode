@@ -331,6 +331,10 @@ def rstep(pat):
 rc=rstep(r'deno task cleanup'); rs=rstep(r'start `app` and `cleanup`')
 if rc is None or rs is None or not rc<rs: pr.append(f'restore summary: cleanup step {rc} must come before the service start step {rs}')
 if 'ABANDONED' not in rec: pr.append('restore summary does not abandon a sealed staged key')
+if rs is not None:
+    for n in sorted(rsteps):
+        if n<rs and re.search(r'\b(start|restart)\b[^.]*\b(services?|instances?|application)\b',rsteps[n],re.I):
+            pr.append(f'restore summary step {n} starts services before step {rs}')
 if 'rate_limits' not in rec: pr.append('restore summary does not truncate rate_limits')
 dep=files['deployment.md']; d61=dep[dep.index('### 6.1'):dep.index('### 6.2')]
 dc=re.search(r'^(\d+)\. Run `deno task cleanup`',d61,re.M); ds=re.search(r'^(\d+)\. Start `app` and `cleanup`',d61,re.M)
