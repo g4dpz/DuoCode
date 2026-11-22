@@ -365,7 +365,7 @@ Any dual-licensing arrangement will depend on the project having the necessary r
 
 The AGPL licence does not grant rights to the DuoCode name, logo or other project branding.
 
-The full AGPL licence text is in the repository’s LICENSE file. The LICENSE, NOTICE and CONTRIBUTING.md files are proposals awaiting owner review, and external contributions are not accepted until the contribution terms are approved.
+The full AGPL licence text is in the repository’s LICENSE file. The LICENSE, NOTICE and CONTRIBUTING.md files were approved by the owners at specification Gate 6. External contributions are not yet accepted, and the contribution terms have not yet had a legal review (see CONTRIBUTING.md).
 
 Contributing
 

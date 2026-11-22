@@ -1,15 +1,8 @@
 # Contributing to DuoCode
 
-> **DRAFT FOR OWNER REVIEW (specification Gate 6).** This file is a proposal prepared for
-> the two founding collaborators. It is not legal advice. Items in square brackets are
-> inputs the owners still have to give. Nothing has been assumed for them:
->
-> - LI-1 exact copyright holder names (see `NOTICE`),
-> - LI-2 whether a contributor licence agreement is required (section 2),
-> - LI-3 legal review of the contribution terms (section 2),
-> - LI-4 the security contact address (section 4).
->
-> Remove this notice when the owners approve the file.
+> **Approved by the owners at specification Gate 6 on 2026-11-22.** This file is not legal
+> advice. The contribution terms in section 2 have not yet had a legal review (LI-3).
+> External contributions stay closed (section 1).
 
 DuoCode is licensed under the GNU Affero General Public License v3.0 only
 (`AGPL-3.0-only`, see `LICENSE` and `NOTICE`). The founders may also offer the software
@@ -20,9 +13,9 @@ under separate commercial licences.
 The project is in specification and approval mode. No application code exists yet.
 
 **Pull requests from anyone other than the two founding collaborators will not be merged**
-until the owners have approved the contribution terms in section 2 and added the
-mechanism that records each contributor's agreement (for example a signed agreement or a
-tool that checks it on every pull request). Issues and review comments on the
+until the owners have added the mechanism that records each contributor's agreement to
+the terms in section 2 (for example a tool that checks it on every pull request). No
+separate contributor licence agreement is used (section 2). Issues and review comments on the
 specification are welcome.
 
 ## 2. Contribution terms (proposal)
@@ -52,8 +45,13 @@ you confirm that:
 6. **Tools.** If AI tools helped write your contribution, you are still responsible for
    it. You must have checked that it is yours to submit under these terms.
 
-**[LI-2: the owners decide whether a separate contributor licence agreement is required, or whether the terms above are enough.]**
-**[LI-3: these terms have not been reviewed by a lawyer. Obtain legal review before relying on them.]**
+**No separate contributor licence agreement is required** (owner decision LI-2,
+2026-11-22). The terms above are the contribution terms.
+
+**Legal review outstanding** (LI-3). These terms have not been reviewed by a lawyer.
+Because no separate agreement is used, the project's right to offer outside contributions
+under commercial licence terms rests on point 2 alone. Obtain legal review before relying
+on them.
 A plain DCO sign-off does not on its own grant the rights in points 2 and 3.
 
 ## 3. How to work on the project
@@ -74,9 +72,9 @@ A plain DCO sign-off does not on its own grant the rights in points 2 and 3.
 
 ## 4. Reporting security problems
 
-Do not open a public issue for a vulnerability. Email the founders at **[LI-4: security contact
-address, to be provided by the owners before the repository becomes public]**. Include steps to reproduce. Do not include real
-tokens, codes or personal data.
+Do not open a public issue for a vulnerability. Write to the founders at
+**96 Summerfields Avenue, Halesowen, B62 9NR**. Include steps to reproduce. Do not include
+real tokens, codes or personal data.
 
 ## 5. Conduct
 

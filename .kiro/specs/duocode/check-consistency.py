@@ -145,8 +145,19 @@ pr=[]
 if sha!='0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0': pr.append('LICENSE checksum differs from FSF text recorded')
 if b'GNU AFFERO GENERAL PUBLIC LICENSE' not in lic or b'Version 3, 19 November 2007' not in lic: pr.append('LICENSE header wrong')
 if 'AGPL-3.0-only' not in files['NOTICE']: pr.append('NOTICE lacks AGPL-3.0-only')
-if 'DRAFT' not in files['NOTICE'] or 'DRAFT' not in files['CONTRIBUTING.md']: pr.append('draft banner missing')
-check(f'C13 licensing artefacts present, LICENSE is the FSF AGPL-3.0 text (sha256 {sha[:16]}...), NOTICE names AGPL-3.0-only',pr)
+g6=bool(re.search(r'^- \[x\] 1\.6 ',files['tasks.md'],re.M))
+if g6:
+    # after Gate 6: no draft banner and no placeholders; NOTICE names exactly the LI-1 holders
+    for fn in ('NOTICE','CONTRIBUTING.md'):
+        if 'DRAFT' in files[fn]: pr.append(f'{fn} still carries the draft banner after Gate 6')
+        if re.search(r'\[(LI-\d|COPYRIGHT HOLDER)',files[fn]): pr.append(f'{fn} still has a placeholder after Gate 6')
+    li1=re.search(r'^\| LI-1 \|[^|]*\|[^|]*\| ([^|]*?)\. No affiliation shown \|',req,re.M)
+    holders=re.findall(r'^Copyright \(C\) \d{4} (.+)$',files['NOTICE'],re.M)
+    if not li1: pr.append('requirements.md LI-1 has no recorded answer')
+    elif set(holders)!=set(x.strip() for x in li1.group(1).split(' and ')): pr.append(f'NOTICE holders {holders} differ from LI-1 ({li1.group(1)})')
+    if 'LI-3' not in files['CONTRIBUTING.md']: pr.append('CONTRIBUTING.md does not record the outstanding legal review LI-3')
+elif 'DRAFT' not in files['NOTICE'] or 'DRAFT' not in files['CONTRIBUTING.md']: pr.append('draft banner missing')
+check(f'C13 licensing artefacts present, LICENSE is the FSF AGPL-3.0 text (sha256 {sha[:16]}...), NOTICE names AGPL-3.0-only, and after Gate 6 no draft banner or placeholder remains and NOTICE names the LI-1 holders',pr)
 # 14 workflows yaml
 pr=[]
 for f in glob.glob(root+'.github/workflows/*.yml'):
@@ -164,6 +175,11 @@ for idx,l in enumerate(lines):
         if not m: pr.append('marked done but not a Phase 1 gate: '+l[:60])
         elif not re.search(r'Signed off \d{4}-\d{2}-\d{2} by .+owner statement "[^"]*\S[^"]*"',nxt): pr.append(f'gate {m.group(1)} marked done without a recorded owner sign-off')
 if re.search(r'^- \[x\] 1\.9',tk,re.M) and len(re.findall(r'^- \[x\] 1\.[1-6] ',tk,re.M))<6: pr.append('1.9 marked done before all six gates')
+awaiting=re.findall(r'^  - \*\*Reopened [^\n]*Awaiting an explicit owner confirmation',tk,re.M)
+if awaiting:
+    if re.search(r'^- \[x\] 1\.9',tk,re.M): pr.append('1.9 marked done while a reopened gate part awaits confirmation')
+    for fn in ('requirements.md','traceability.md','tasks.md','revision-3.1-review-package.md'):
+        if 'awaiting owner confirmation' not in files[fn]: pr.append(f'{fn} status does not mention the reopened gate part awaiting confirmation')
 signed=re.findall(r'^- \[x\] (1\.[1-6]) ',tk,re.M)
 check(f'C15 only Phase 1 gates are marked done, each with a recorded owner sign-off (signed: {", ".join(signed) or "none"})',pr)
 # 16 baseline constants
@@ -371,6 +387,13 @@ for c in sorted(canon-set(re.findall(kcmd,lay))): pr.append(f'design.md section 
 t92=re.search(r'^- \[[ x]\] 9\.2a .*$',files['tasks.md'],re.M)
 for c in sorted(canon-set(re.findall(kcmd,t92.group(0) if t92 else ''))): pr.append(f'tasks.md 9.2a does not list {c}')
 check(f'C28 every key command used in the specification is in the deployment.md 2.1 list, the design layout and task 9.2a ({len(canon)} commands)',pr)
+# 29 headings quoted by name in requirements.md exist
+pr=[]
+heads=set(h.strip() for h in re.findall(r'^#{2,4} (.+)$',req,re.M))
+for m in re.finditer(r'(?:listed under|see) "([^"]+)"',req):
+    q=m.group(1)
+    if not any(h==q or h.startswith(q+' (') for h in heads): pr.append(f'requirements.md quotes the heading "{q}", which does not exist')
+check('C29 every heading quoted by name in requirements.md exists',pr)
 # 22 OpenAPI lint
 import shutil as _sh
 if _sh.which('npx'):
