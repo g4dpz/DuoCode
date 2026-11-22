@@ -297,6 +297,20 @@ for path,item in oa['paths'].items():
             if c not in codes: pr.append(f"{op['operationId']} lacks {c}")
         if path.startswith('/admin') and '429' not in codes: pr.append(f"{op['operationId']} lacks 429")
 check('C25 every OpenAPI operation declares 500 and 503, and admin operations declare 429',pr)
+# 26 the write order of checks includes the claim, the pre-encryption check and the commit-time check (CR-23)
+pr=[]
+smw=files['state-machine.md']
+w=smw[smw.index('### 1.3 Order of checks'):smw.index('### 1.4')]
+steps=re.findall(r'^(\d+)\. (.*)$',w,re.M)
+def pos(pat):
+    for n,t in steps:
+        if re.search(pat,t): return int(n)
+    return None
+pc=pos(r'Encryption claim.*pre-encryption check'); pb=pos(r'^Begin transaction'); pk=pos(r'Commit-time check'); pa=pos(r'^Apply changes')
+if None in (pc,pb,pk,pa): pr.append(f'missing step: claim={pc} begin={pb} apply={pa} commit-check={pk}')
+elif not (pc<pb<pa<pk): pr.append(f'wrong order: claim={pc} begin={pb} apply={pa} commit-check={pk}')
+if [int(n) for n,_ in steps]!=list(range(1,len(steps)+1)): pr.append('steps not numbered 1..n')
+check('C26 state-machine 1.3 orders claim and pre-encryption check before BEGIN and the commit-time check before COMMIT',pr)
 # 22 OpenAPI lint
 import shutil as _sh
 if _sh.which('npx'):
