@@ -172,6 +172,12 @@ for idx,l in enumerate(lines):
     if re.match(r'- \[x\]',l):
         m=re.match(r'- \[x\] (1\.[1-6]) \*\*Gate|- \[x\] (1\.9) \*\*Phase 1 sign-off',l)
         nxt=lines[idx+1] if idx+1<len(lines) else ''
+        mp=re.match(r'- \[x\] (\d+)\.\d+[a-z]? ',l)
+        if mp and int(mp.group(1))>=2:
+            tid=l.split()[2]
+            if not re.search(r'^- \[x\] 1\.9 ',tk,re.M): pr.append(f'task {tid} marked done before Phase 1 sign-off (1.9)')
+            elif not re.search(r'Done \d{4}-\d{2}-\d{2}',nxt): pr.append(f'task {tid} marked done without a dated record')
+            continue
         if re.match(r'- \[x\] 1\.[78] ',l):
             if not re.search(r'Done \d{4}-\d{2}-\d{2}',nxt): pr.append(f'{l[6:9]} marked done without a dated record')
             continue
@@ -186,7 +192,7 @@ if awaiting:
     for fn in ('requirements.md','traceability.md','tasks.md','revision-3.1-review-package.md'):
         if 'awaiting owner confirmation' not in files[fn]: pr.append(f'{fn} status does not mention the reopened gate part awaiting confirmation')
 signed=re.findall(r'^- \[x\] (1\.[1-6]) ',tk,re.M)
-check(f'C15 only Phase 1 gates are marked done, each with a recorded owner sign-off (signed: {", ".join(signed) or "none"})',pr)
+check(f'C15 every ticked task carries its record (gates and 1.9 an owner statement, 1.7, 1.8 and later phases a dated Done line), and no later-phase task is ticked before 1.9 (signed: {", ".join(signed) or "none"})',pr)
 # 16 baseline constants
 pr=[]
 def oa_resolve(node):
@@ -235,13 +241,14 @@ for fn in spec:
         if re.search(r'\b(?:RD|CH|ND|CR|CL)-\d+',l) and re.search(r'\b[Pp]ending\b',l) and 'Pending** (needs' not in l and 'None of the technical decisions is pending' not in l:
             pr.append(f'{fn}:{i}: {l.strip()[:110]}')
 check('C20 no decision recorded as approved in the register is still described as pending elsewhere',pr)
-# 21 no application code, migrations or implementation tasks
+# 21 no application code, migrations or implementation tasks before Phase 1 sign-off (task 1.9)
 import subprocess
+phase1_signed=bool(re.search(r'^- \[x\] 1\.9 ',files['tasks.md'],re.M))
 lsf=subprocess.run(['git','-C',root,'ls-files','-co','--exclude-standard'],capture_output=True,text=True)
 tracked=lsf.stdout.split()
 allowed_ext={'.md','.yaml','.yml','.py'}
 pr=[f'git ls-files failed (exit {lsf.returncode}): {lsf.stderr.strip()[:100]}'] if lsf.returncode!=0 else []
-for f in tracked:
+for f in ([] if phase1_signed else tracked):
     base=os.path.basename(f); ext=os.path.splitext(f)[1]
     top=f.split('/')[0]
     if top=='.agents': continue   # local agent working files, never committed
@@ -251,8 +258,8 @@ for f in tracked:
     elif ext=='.py' and f.startswith('.kiro/specs/duocode/'): continue   # specification tooling, not application code
     elif ext not in allowed_ext: pr.append(f'{f}: unexpected file type')
     elif f.startswith('.github/workflows/'): continue               # CI skeleton added earlier at the owner request, no application logic
-if any(l.startswith('- [x]') and not __import__('re').match(r'- \[x\] 1\.(?:[1-6] \*\*Gate|[78] |9 \*\*Phase 1 sign-off)',l) for l in files['tasks.md'].splitlines()): pr.append('an implementation task is marked done')
-check('C21 no application code, database migration or implementation directory exists (only specification, licensing, CI skeleton and the two specification tool scripts)',pr)
+if not phase1_signed and any(l.startswith('- [x]') and not __import__('re').match(r'- \[x\] 1\.(?:[1-6] \*\*Gate|[78] |9 \*\*Phase 1 sign-off)',l) for l in files['tasks.md'].splitlines()): pr.append('an implementation task is marked done')
+check('C21 before Phase 1 sign-off (task 1.9), no application code, database migration or implementation directory exists'+(' (1.9 signed off: implementation allowed)' if phase1_signed else ''),pr)
 # 23 key usage design consistency (CR-9)
 pr=[]
 ku=re.search(r"CREATE TABLE key_usage \((.*?)\n\);",ddl,re.S)
