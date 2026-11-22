@@ -264,7 +264,7 @@ check('C23 key usage design is consistent: one authoritative row per key, CHECK 
 vs=open(d+'verify-schema.py').read()
 pr=[]
 if '(HERE / "database-schema.md")' not in vs: pr.append('verify-schema.py does not read database-schema.md')
-for name in ('reserve_sql','register_sql','check_sql','commit_check_sql','report_sql','activation_sql','offline_sql','presence_sql'):
+for name in ('reserve_sql','register_sql','check_sql','commit_check_sql','report_sql','activation_sql','offline_sql','presence_sql','admission_sql','require_sql'):
     m=re.search(r'^\s*'+name+r'\s*=\s*(.+)$',vs,re.M)
     if not m: pr.append(f'{name} is not assigned'); continue
     if not m.group(1).startswith('next(b for b in blocks if'): pr.append(f'{name} is not extracted from the specification SQL blocks: {m.group(1)[:60]}')

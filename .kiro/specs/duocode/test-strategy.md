@@ -182,6 +182,10 @@ Canonicalisation (R5.12):
   - (PG) Offline activation (CR-17): allowed only when no presence lock of either class is held, refused while any reader is live.
   - (PG) Report privileges (CR-17): under the restricted application role the report upsert and the cleanup prune both succeed.
   - (PG) `keyverify` join (CR-17): under the `keyverify` role, joining `secret_codes` and `guesses` to `players(id, game_id)` succeeds, reading `players.nickname` is refused, and any write is refused.
+  - (PG) Admission gate (CR-18): after activation commits the staged key into `required_key_ids`, a reader whose ring lacks it is refused by the admission check. A reader that was admitted just before that commit is in the roster, and activation is refused until its report contains the staged key.
+  - (PG) Bounded verifier and key-management locks (CR-18): `keyverify`'s shared try-lock fails while `keymgmt` holds the ring lock exclusively, and `keymgmt`'s exclusive try-lock fails while a verifier holds it shared. Both succeed when the other is gone. A session-level lock is released when the verifier's connection ends.
+  - (PG, model) Retry is a fresh attempt (CR-18): an attempt that consumed a unit and then rolled back for real cannot be retried with the same claim. The retry claims again (reserving if needed) before beginning. Invocations never exceed `R`, and a spent unit is never returned.
+  - (APP) Verifier deadline (CR-18): a `keyverify` run that exceeds `KEYVERIFY_MAX_SECONDS` is ended and its locks are released. `keymgmt` gives up after `KEYMGMT_LOCK_WAIT_SECONDS` and names the lock holders.
   - (PG) Role separation (CR-16): the `keymgmt` role can read and change `key_usage`, read `instance_ring_reports`, and cannot read `secret_codes` or `guesses`. The `keyverify` role can read those tables and cannot change anything.
   - (APP) No hot reload and no carried allowance: changing the ring file while a process runs does not change its active key. After a restart the allowance is zero. The ring `generation` is exposed per instance in the admin metrics and the rotation procedure refuses to seal while an instance reports the old generation unless forced.
   - No invocation beyond the limit: in every test above, `invocations <= R <= 2^30` is asserted at the end and at intervals.
@@ -301,6 +305,7 @@ Each scenario runs many iterations with randomised ordering and barriers to forc
 | TS-CONC-26 | Requests race on one instance while a reservation is in progress | After the reservation returns every claim is checked against the current allowance. No claim exceeds it. `invocations <= R <= 2^30` |
 | TS-CONC-27 | Live token rotation adds ciphertext to a game that a re-encryption job has already counted | The job recounts under the lock, rolls back, enlarges its claim outside the transaction, retries, and never reserves inside the transaction |
 | TS-CONC-28 | Seal of a key while many transactions are writing ciphertext under it | Each transaction either commits before the seal or rolls back at its commit-time check. After the seal commits, no ciphertext row under the key is added. No deadlock between seal, reservations and game transactions |
+| TS-CONC-29 | Readers start and stop continuously while a key is activated | No reader is admitted after the activation commit without the staged key. Activation is refused while any admitted reader lacks it. After activation every serving reader can decrypt the new key |
 
 ## 13. TS-API and TS-CONTRACT (R12)
 

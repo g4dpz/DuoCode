@@ -177,6 +177,12 @@ CREATE TABLE instance_ring_reports (                    -- which ring each runni
   reported_at      timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE ring_state (                               -- admission gate for readers (CR-18). Exactly one row, inserted by the migration
+  id                boolean PRIMARY KEY DEFAULT true CHECK (id),
+  required_key_ids  smallint[] NOT NULL DEFAULT '{}',   -- every reader must have loaded all of these before it may serve
+  updated_at        timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE schema_migrations (
   version     integer PRIMARY KEY,
   name        text NOT NULL,
@@ -391,7 +397,15 @@ Consequence of G1 to G4: the number of encryption invocations under a key can ne
 SELECT pg_advisory_lock(4242002, $1);              -- $1 = presence id: a random int4 chosen at process start
 ```
 
-The lock disappears the moment the process or its connection ends, so `pg_locks` lists exactly the live readers. A process must hold its presence lock **and** have written its report before it serves any request. If its presence connection drops, it stops serving (not ready) until it has taken the lock again and reported again. The read-only `keyverify` job holds a lock in a separate class, `pg_advisory_lock(4242003, $1)`, and does not report. `keymgmt` loads the newest ring itself and is not part of the roster.
+The lock disappears the moment the process or its connection ends, so `pg_locks` lists exactly the live readers. **Admission (CR-18).** Holding a presence lock is not enough to serve. Immediately after taking the lock, on the same connection, the process runs the admission check, with `$1` = the key ids in its loaded ring:
+
+```sql
+SELECT required_key_ids <@ $1::smallint[] AS admitted FROM ring_state WHERE id;
+```
+
+If it returns `false`, the process releases its lock and exits, because its ring is older than the fleet requires. A process must be admitted, hold its presence lock, **and** have written its report before it serves any request.
+
+**Why this closes the admission race.** `keys:activate` first commits `required_key_ids` with the staged key added, and only then reads the roster. A reader that ran its admission check before that commit had already taken its presence lock, so it is in the roster when the roster is read, and its report must contain the staged key or activation is refused. A reader that runs its admission check after that commit sees the staged key in `required_key_ids` and is refused unless its ring has it. There is no window in which a reader without the staged key can be admitted and not be counted. If its presence connection drops, it stops serving (not ready) until it has taken the lock again and reported again. The read-only `keyverify` job holds a lock in a separate class, `pg_advisory_lock(4242003, $1)`, and does not report. `keymgmt` loads the newest ring itself and is not part of the roster.
 
 **Report.** After taking its presence lock, and on every refresh, the process upserts:
 
@@ -404,7 +418,15 @@ ON CONFLICT (presence_id) DO UPDATE SET ring_generation = EXCLUDED.ring_generati
 
 On a clean shutdown it deletes its own row. Rows of processes that are gone are pruned by cleanup.
 
-**Online activation.** `keys:activate <key_id> --expect <N>` refuses unless this returns `true`. `$1` is `N`, the operator's expected number of live readers, and `$2` is the staged key:
+**Online activation.** `keys:activate <key_id> --expect <N>` runs while holding the ring single-writer lock. It first commits the requirement that every reader admitted from now on has the staged key:
+
+```sql
+UPDATE ring_state SET required_key_ids = array_append(array_remove(required_key_ids, $1::smallint), $1::smallint),
+                      updated_at = now()
+WHERE id;
+```
+
+Then it refuses unless the roster query below returns `true`. `$1` is `N`, the operator's expected number of live readers, and `$2` is the staged key:
 
 ```sql
 WITH live AS (
@@ -429,7 +451,7 @@ SELECT NOT EXISTS (SELECT 1 FROM pg_locks
    AS no_readers;
 ```
 
-Offline activation never runs while any reader is live. Online activation never accepts `--offline`. Both run under the ring single-writer lock.
+Offline activation also commits the same `required_key_ids` update before it changes the ring. Offline activation never runs while any reader is live. When a key is retired (removed from the ring), `keys:retire` removes it from `required_key_ids` under the ring lock. Online activation never accepts `--offline`. Both run under the ring single-writer lock.
 
 **Privileges.** The application role (used by `app`, `cleanup` and `reencrypt`) has `SELECT`, `INSERT`, `UPDATE` and `DELETE` on `instance_ring_reports`. The upsert reads columns through `EXCLUDED`, and cleanup's `DELETE` reads `reported_at`. The `keymgmt` role has `SELECT` on it. `pg_locks` is readable by every role, and advisory locks need no table privilege.
 

@@ -113,7 +113,7 @@ try:
     # ----- constraints ------------------------------------------------------
     @test("DDL applies to an empty database")
     def _():
-        assert sql("SELECT count(*) FROM information_schema.tables WHERE table_schema='public';") == "13"
+        assert sql("SELECT count(*) FROM information_schema.tables WHERE table_schema='public';") == "14"
 
     @test("at most two seats per game, seat 3 rejected")
     def _():
@@ -266,6 +266,8 @@ try:
     activation_sql = next(b for b in blocks if "AS all_staged" in b)
     offline_sql = next(b for b in blocks if "AS no_readers" in b)
     presence_sql = next(b for b in blocks if "SELECT pg_advisory_lock(4242002, $1);" in b).strip()
+    admission_sql = next(b for b in blocks if "AS admitted FROM ring_state" in b).strip()
+    require_sql = next(b for b in blocks if "UPDATE ring_state SET required_key_ids" in b).strip()
     L = 2 ** 30
     BLOCK = 1024
 
@@ -1007,6 +1009,69 @@ try:
             sql("SET ROLE duocode_keyverify; UPDATE key_usage SET reserved = reserved WHERE false;", expect_error="permission denied")
         finally:
             sql("REVOKE ALL ON ALL TABLES IN SCHEMA public FROM duocode_keymgmt, duocode_keyverify; DROP ROLE duocode_keymgmt; DROP ROLE duocode_keyverify;")
+
+    @test("admission gate: after activation commits the staged key, a reader without it is refused; a reader admitted just before is counted and blocks until it reports the key (CR-18)")
+    def _():
+        sql("TRUNCATE instance_ring_reports; DELETE FROM ring_state; INSERT INTO ring_state DEFAULT VALUES;")
+        sql(require_sql.replace("$1", "1"))                              # key 1 required already
+        def admit(conn_cmds, keys):
+            return conn_cmds + "\n" + admission_sql.replace("$1", "ARRAY[" + ",".join(map(str, keys)) + "]::smallint[]")
+        def report(pid, keys):
+            sql(report_sql.replace("$1", str(pid)).replace("$2", "8").replace("$3", "ARRAY[" + ",".join(map(str, keys)) + "]::smallint[]"))
+        early = session(admit(presence_sql.replace("$1", "31"), [1]))     # admitted BEFORE the activation commit, ring lacks key 2
+        try:
+            report(31, [1])
+            sql(require_sql.replace("$1", "2"))                          # activation step 1: commit the requirement
+            # a reader starting now with the old ring is refused by the admission check
+            late_out = sql(presence_sql.replace("$1", "32") + "\n" + admission_sql.replace("$1", "ARRAY[1]::smallint[]") + "\nSELECT pg_advisory_unlock(4242002, 32);")
+            assert late_out.splitlines()[0] == "f", late_out   # (pg_advisory_lock returns void, so the first line is the admission result)
+            # activation step 2: the early reader is in the roster and its report lacks key 2, so activation is refused
+            assert sql(activation_sql.replace("$1", "1").replace("$2", "2")) == "f"
+            report(31, [1, 2])                                           # (in practice: restarted with the staged ring)
+            assert sql(activation_sql.replace("$1", "1").replace("$2", "2")) == "t"
+            ok_out = sql(presence_sql.replace("$1", "33") + "\n" + admission_sql.replace("$1", "ARRAY[1,2]::smallint[]") + "\nSELECT pg_advisory_unlock(4242002, 33);")
+            assert ok_out.splitlines()[0] == "t"                         # a reader with the staged key is admitted
+        finally:
+            finish(early)
+
+    @test("bounded locks: keyverify's shared try-lock fails during a ring change, keymgmt's exclusive try-lock fails during a verification, both free afterwards (CR-18)")
+    def _():
+        lock_key = re.search(r"pg_advisory_lock\((\d+)\)", spec_text).group(1)
+        M = session(f"SELECT pg_advisory_lock({lock_key});")             # keymgmt changing the ring
+        try:
+            assert sql(f"SELECT pg_try_advisory_lock_shared({lock_key});") == "f"   # keyverify exits "busy" at once
+        finally:
+            finish(M)
+        V = session(f"SELECT pg_try_advisory_lock_shared({lock_key});")  # keyverify running
+        try:
+            assert sql(f"SELECT pg_try_advisory_lock({lock_key});") == "f"          # keymgmt's try fails, it retries until its deadline
+        finally:
+            finish(V)                                                    # the session lock goes with the connection
+        out = sql(f"SELECT pg_try_advisory_lock({lock_key}); SELECT pg_advisory_unlock({lock_key});")
+        assert out.splitlines()[0] == "t"
+
+    @test("retry is a fresh attempt: a rolled-back attempt's spent unit is never reused; the retry claims again before beginning (CR-18 model, real reservation and rollback)")
+    def _():
+        reset_data(); register(1); new_game(1); new_player(11, 1, 1)
+        inst = Instance(key=1, block=1)
+        class Claim:
+            def __init__(self, n): self.n = n; self.spent = 0
+        def attempt(claim, fail):
+            assert claim.n - claim.spent >= 1, "encryption without an unspent unit of THIS attempt's claim"
+            claim.spent += 1; inst.invocations += 1          # unit consumed before the cipher is called
+            out = sql("BEGIN;\n" f"INSERT INTO secret_codes(player_id,key_id,ciphertext) VALUES ('{u(11)}',1,decode(repeat('01',32),'hex'));\n"
+                      + ("ROLLBACK;" if fail else "COMMIT;"))
+            return not fail
+        c1 = Claim(inst.claim())
+        assert attempt(c1, fail=True) is False               # deadlock-style failure after the encryption
+        try:
+            attempt(c1, fail=False); raise AssertionError("retry reused a spent unit")
+        except AssertionError as e:
+            assert "unspent unit" in str(e)
+        c2 = Claim(inst.claim())                             # the retry claims again (reserving: block of 1)
+        assert attempt(c2, fail=False) is True
+        assert inst.invocations == 2 <= R(1) == 2
+        assert sql("SELECT count(*) FROM secret_codes;") == "1"
 
     def tool(name, override):
         cand = override or (str(SB / name) if (SB / name).exists() else None)
