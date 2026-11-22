@@ -287,6 +287,16 @@ for name in ('INSERT INTO key_usage','UPDATE key_usage','SELECT NOT sealed'):
         if 'expect_error' in l or 'reserved = -1' in l or 'reserved = 1;' in l or 'reserved = {L + 1}' in l or 'SET sealed = true WHERE key_id = 2' in l: continue
         pr.append(f'hard-coded key_usage statement in verify-schema.py: {l.strip()[:80]}')
 check('C24 the schema verification tool takes the reservation, registration and sealing statements from database-schema.md',pr)
+# 25 every operation declares the cross-cutting failure responses (CR-22)
+pr=[]
+for path,item in oa['paths'].items():
+    for meth,op in item.items():
+        if meth not in ('get','post','put','delete','patch'): continue
+        codes=set(op.get('responses',{}))
+        for c in ('500','503'):
+            if c not in codes: pr.append(f"{op['operationId']} lacks {c}")
+        if path.startswith('/admin') and '429' not in codes: pr.append(f"{op['operationId']} lacks 429")
+check('C25 every OpenAPI operation declares 500 and 503, and admin operations declare 429',pr)
 # 22 OpenAPI lint
 import shutil as _sh
 if _sh.which('npx'):
