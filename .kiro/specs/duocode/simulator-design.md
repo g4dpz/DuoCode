@@ -85,7 +85,7 @@ A game's two players may use different strategies. `mixed` picks per player from
 | Attempt counts | `guessNumber` increments by one per accepted guess. Never above 10. `guessesRemaining` matches |
 | Replay behaviour | Duplicates return the same body, header present, counts unchanged |
 | State transitions | Observed states follow `state-machine.md`: activation only after both codes, completion only when both players finished, no regression |
-| Secrecy | Scanned by field and ownership: no response before completion contains any secret code of the game, and no response contains the opponent's guesses or feedback. The caller's own guesses, including a winning one, are allowed in progress |
+| Secrecy | Scanned by field and ownership: no response before completion contains any secret code of the game, and no response except a completed `getResults` contains the opponent's guesses or feedback. The caller's own guesses, including a winning one, are allowed in progress |
 | Opponent progress | Only counts and flags, matches the opponent's real progress |
 | Outcome | Server outcome equals the outcome recomputed from observed guess counts and solved flags |
 | Status codes | Every status and error code is one the OpenAPI document allows for that operation |

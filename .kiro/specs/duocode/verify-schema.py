@@ -1170,6 +1170,50 @@ try:
         referenced = {int(x) for x in sql("SELECT DISTINCT key_id FROM secret_codes;").split()}
         assert not (referenced <= set(newest_ring))
 
+    @test("presence report clearing: taking the presence lock deletes a crashed predecessor's report with the same id and leaves other reports (C3)")
+    def _():
+        sql("TRUNCATE instance_ring_reports;")
+        clear = re.search(r"`(DELETE FROM instance_ring_reports WHERE presence_id = \$1)`", spec_text)
+        assert clear, "database-schema.md does not state the clearing statement"
+        for pid in (51, 52):
+            sql(report_sql.replace("$1", str(pid)).replace("$2", "8").replace("$3", "ARRAY[1]::smallint[]"))
+        assert sql("SELECT count(*) FROM instance_ring_reports;") == "2"
+        P = session(presence_sql.replace("$1", "51") + "\n" + clear.group(1).replace("$1", "51") + ";")   # a new process draws the id of a crashed one
+        try:
+            assert sql("SELECT string_agg(presence_id::text, ',' ORDER BY presence_id) FROM instance_ring_reports;") == "52"
+        finally:
+            finish(P)
+    @test("accepted-loss recovery: the affected-games list covers ciphertext and fingerprint keys, in-progress games expire at once, completed games stay, and keymgmt's column grants suffice (RD-21)")
+    def _():
+        reset_data()
+        affected_sql = next(b for b in blocks if "UNION SELECT t.game_id FROM token_rotations" in b).strip().rstrip(";")
+        expire_sql = next(b for b in blocks if "UPDATE games SET expires_at = now()" in b).strip()
+        for g, st in ((1, "ACTIVE"), (2, "COMPLETED"), (3, "ACTIVE"), (4, "ACTIVE")):
+            if st == "COMPLETED":
+                sql(f"INSERT INTO games(id,state,config,expires_at,completed_at) VALUES ('{u(g)}','COMPLETED','{{}}',now()+interval '1 day',now());")
+            else:
+                new_game(g)
+            new_player(g * 10 + 1, g, 1)
+        sql(f"INSERT INTO secret_codes(player_id,key_id,ciphertext) VALUES ('{u(11)}',3,decode(repeat('01',32),'hex')), ('{u(21)}',3,decode(repeat('01',32),'hex')), ('{u(41)}',1,decode(repeat('01',32),'hex'));")
+        sql(f"INSERT INTO guesses(player_id,guess_number,key_id,guess_ciphertext,exact,misplaced) VALUES ('{u(31)}',1,1,decode(repeat('01',32),'hex'),0,0);")
+        sql(f"INSERT INTO idempotency_keys(player_id,key,guess_id,fingerprint,fingerprint_key_id,response_status,response_body) VALUES ('{u(31)}','{u(100)}',(SELECT id FROM guesses),decode(repeat('00',32),'hex'),3,201,'{{}}');")   # a lost fingerprint key only
+        sql("DROP ROLE IF EXISTS t_km3; CREATE ROLE t_km3;")
+        try:
+            grants = re.search(r"`SELECT \(player_id\)` on `secret_codes`, `guesses` and `idempotency_keys`, `SELECT \(game_id\)` on `token_rotations`, `SELECT \(id, game_id\)` on `players`, `SELECT \(id, state, expires_at\)` and `UPDATE \(expires_at\)` on `games`", (HERE / "deployment.md").read_text())
+            assert grants, "deployment.md does not state the accepted-loss column grants"
+            sql("GRANT SELECT (key_id) ON secret_codes, guesses TO t_km3; GRANT SELECT (token_key_id) ON token_rotations TO t_km3; GRANT SELECT (fingerprint_key_id) ON idempotency_keys TO t_km3; GRANT SELECT (player_id) ON secret_codes, guesses, idempotency_keys TO t_km3; GRANT SELECT (game_id) ON token_rotations TO t_km3; GRANT SELECT (id, game_id) ON players TO t_km3; GRANT SELECT (id, state, expires_at), UPDATE (expires_at) ON games TO t_km3;")
+            lst = sql("SET ROLE t_km3;\n" + affected_sql.replace("$1", "ARRAY[3]::smallint[]") + ";")
+            assert [x.split("|")[0] for x in lst.split()] == [u(1), u(2), u(3)], lst           # games 1 and 2 (ciphertext), 3 (fingerprint key only), not 4
+            assert {x.split("|")[1] for x in lst.split() if x.startswith(u(2))} == {"COMPLETED"}
+            ids = "ARRAY[" + ",".join(f"'{u(g)}'" for g in (1, 2, 3)) + "]::uuid[]"
+            out = sql("SET ROLE t_km3;\n" + expire_sql.replace("$2", ids))
+            assert sorted(out.split()) == [u(1), u(3)], out                                  # in-progress games expire, the completed game is untouched
+            assert sql("SELECT string_agg(id::text, ',' ORDER BY id) FROM games WHERE expires_at <= now();") == f"{u(1)},{u(3)}"
+            assert sql("SELECT count(*) FROM games WHERE id = '" + u(2) + "' AND expires_at > now() + interval '12 hours';") == "1"
+            sql("SET ROLE t_km3; SELECT ciphertext FROM secret_codes;", expect_error="permission denied")
+            sql("SET ROLE t_km3; SELECT nickname FROM players;", expect_error="permission denied")
+        finally:
+            sql("REVOKE ALL ON secret_codes, guesses, idempotency_keys, token_rotations, players, games FROM t_km3; DROP ROLE t_km3;")
     def tool(name, override):
         cand = override or (str(SB / name) if (SB / name).exists() else None)
         if not cand:

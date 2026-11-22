@@ -103,6 +103,7 @@ Canonicalisation (R5.12):
   - Wrong key, same old token: `401`. Different old token with same key: `409`.
   - After `ROTATION_REPLAY_SECONDS` (use a short test value): `401` even if the ciphertext is still stored. After cleanup the ciphertext is cleared.
   - Replay when the new token has itself been rotated away: `401`.
+  - Twin rotations (RD-18, RD-21): two requests with the same token and key, both past the preliminary lookup before either takes the game lock, with the bucket at one unit and at full capacity. Assert one rotation, one replay response, bucket statements outside the game transaction, a net charge of one unit (the replay's unit refunded), and no `429` for a validated replay (a denied charge is re-checked first).
   - Replay returns the original response byte for byte (body identical, status `201`, `Idempotent-Replay: true`).
   - RD-11 conditions: the replacement token is returned only when all five hold. Test each failing in turn (wrong or absent old token, wrong key, a different fingerprint, a window that has passed, a replacement token revoked by a later rotation) and assert no decrypt call is made and the response is `401` or `409` with no token in it.
   - Canary (RD-11): across the whole run, the replacement token never appears in any log line, diagnostic output, metric, trace or error body, in the first response or in a replay (TS-SEC).

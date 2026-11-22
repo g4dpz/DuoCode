@@ -507,6 +507,38 @@ for fn in spec:
 r203=re.search(r'^3\. (EACH application-layer limit.*)$',req[req.index('### R20:'):],re.M)
 if not r203 or 'sliding-window' not in r203.group(1) or 'not token buckets' not in r203.group(1): pr.append('R20.3 does not scope token buckets to the application layer')
 check('C36 validated pl:rotate replays are described as exempt wherever they are mentioned, and R20.3 limits token buckets to the application layer',pr)
+# 37 to 40 PR #17 review follow-ups (RD-21, replay maintenance loop, simulator secrecy scope, twin rotation charging)
+pr=[]
+ds=files['database-schema.md']; dep=files['deployment.md']
+for fn in ('deployment.md','database-schema.md','security-assessment.md','tasks.md'):
+    if 'RD-21' not in files[fn] and fn!='tasks.md': pr.append(fn+': no mention of RD-21')
+if not re.search(r'^\| RD-21 \|.*expired immediately.*results return an internal error.*keys:verify. accepts',req,re.M): pr.append('requirements.md: RD-21 row missing or incomplete')
+for need in ('acceptedLoss','SET expires_at = now()','idempotency_keys i JOIN players','--accepted-loss'):
+    if need not in ds: pr.append('database-schema.md: missing '+need)
+if '--accepted-loss' not in dep: pr.append('deployment.md: missing --accepted-loss')
+if not re.search(r'in progress is expired at once',dep): pr.append('deployment.md 6.2 does not expire in-progress affected games')
+if '--accepted-loss' not in files['tasks.md'] or 'RD-21' not in files['tasks.md']: pr.append('tasks.md 9.2a does not define the accepted-loss options')
+for i,l in enumerate(files['security-assessment.md'].splitlines(),1):
+    if 'abandoned games are left to cleanup' in l: pr.append(f'security-assessment.md:{i}: affected games described without immediate expiry')
+check('C37 missing-key recovery (RD-21): decision row, durable record, immediate expiry of in-progress affected games, verifier exclusion list and task 9.2a agree',pr)
+pr=[]
+if re.search(r'Maintenance statements, run once',ds): pr.append('database-schema.md: replay maintenance still described as run once per cleanup run')
+if 'Replay ciphertext maintenance has its own loop' not in ds or 'updates no rows' not in ds: pr.append('database-schema.md: replay maintenance loop not specified')
+if 'separate replay-ciphertext loop' not in files['tasks.md']: pr.append('tasks.md 5.11 lacks the replay maintenance loop test')
+check('C38 replay ciphertext maintenance in cleanup is its own loop of committed batches that stops when no rows are updated',pr)
+pr=[]
+for fn in ('simulator-design.md','test-strategy.md','copilot-instructions.md'):
+    for i,l in enumerate(files[fn].splitlines(),1):
+        if re.search(r"no response[^.|]*opponent'?s guesses",l,re.I) and not re.search(r'except[^.|]*completed `?getResults',l): pr.append(f'{fn}:{i}: opponent guess ban without the completed getResults exception')
+if 'except a completed `getResults`' not in files['simulator-design.md']: pr.append('simulator-design.md: secrecy check lacks the completed getResults exception')
+check('C39 the simulator ban on opponent guesses and feedback exempts completed getResults',pr)
+pr=[]
+sm=files['state-machine.md']
+for need in ('Charging `pl:rotate` for twin requests','compensating autocommit statement','read-only check','outside the game transaction'):
+    if need not in sm: pr.append('state-machine.md: missing '+need)
+if 'Twin rotations' not in files['test-strategy.md']: pr.append('test-strategy.md: no twin rotation test')
+if 'refunded' not in dep: pr.append('deployment.md: no pl:rotate refund rule')
+check('C40 the pl:rotate charging order for twin rotation requests (charge, refund after a validated replay, replay re-check before 429) is defined in state-machine.md and referenced in deployment.md and test-strategy.md',pr)
 # 22 OpenAPI lint
 import shutil as _sh
 if _sh.which('npx'):

@@ -473,7 +473,28 @@ WHERE id
 RETURNING required_key_ids;
 ```
 
-Before running it, the tool confirms that every key id referenced by restored ciphertext (`secret_codes.key_id`, `guesses.key_id`, `token_rotations.token_key_id`) and every key id referenced by a restored keyed fingerprint (`idempotency_keys.fingerprint_key_id`) is in `$1`, using `SELECT DISTINCT` on those columns. If the check cannot read one of these columns (a missing grant or an unavailable table), the tool stops and recovery does not continue. If any is missing, the data under it cannot be decrypted by any reader, the tool stops, and the operator follows `deployment.md` section 6.2. The only exception is the offline accepted-loss procedure of `deployment.md` section 6.2 situation B (RD-19): the operator names the missing key ids as accepted loss, the confirmation is skipped for exactly those ids, the gate is set to the keys the newest ring loads, and the key registry rows, fingerprint history and sealed counters stay unchanged. The restore procedure runs the reconciliation twice: before `keyverify`, and again after the new key is activated and any staged key is abandoned. Offline activation never runs while any reader is live. When a key is retired (removed from the ring), `keys:retire` removes it from `required_key_ids` under the ring lock. Online activation never accepts `--offline`. Both run under the ring single-writer lock.
+Before running it, the tool confirms that every key id referenced by restored ciphertext (`secret_codes.key_id`, `guesses.key_id`, `token_rotations.token_key_id`) and every key id referenced by a restored keyed fingerprint (`idempotency_keys.fingerprint_key_id`) is in `$1`, using `SELECT DISTINCT` on those columns. If the check cannot read one of these columns (a missing grant or an unavailable table), the tool stops and recovery does not continue. If any is missing, the data under it cannot be decrypted by any reader, the tool stops, and the operator follows `deployment.md` section 6.2. The only exception is the offline accepted-loss procedure of `deployment.md` section 6.2 situation B (RD-19, RD-21): the operator names the missing key ids as accepted loss, the confirmation is skipped for exactly those ids, the gate is set to the keys the newest ring loads, and the key registry rows, fingerprint history and sealed counters stay unchanged.
+**Affected games under accepted loss (RD-21).** A missing key id can be a ciphertext key (`secret_codes.key_id`, `guesses.key_id`, `token_rotations.token_key_id`) or a fingerprint key (`idempotency_keys.fingerprint_key_id`). In an accepted-loss run the tool, in this order and only while no reader is live:
+1. Lists the affected games, with `$1` the missing key ids. The list covers lost ciphertext keys and lost fingerprint keys alike, so a game whose only loss is a fingerprint key or a replay key is included:
+```sql
+SELECT a.game_id, g.state
+FROM (SELECT p.game_id FROM secret_codes s JOIN players p ON p.id = s.player_id WHERE s.key_id = ANY($1::smallint[])
+      UNION SELECT p.game_id FROM guesses x JOIN players p ON p.id = x.player_id WHERE x.key_id = ANY($1::smallint[])
+      UNION SELECT t.game_id FROM token_rotations t WHERE t.token_key_id = ANY($1::smallint[])
+      UNION SELECT p.game_id FROM idempotency_keys i JOIN players p ON p.id = i.player_id WHERE i.fingerprint_key_id = ANY($1::smallint[])) a
+JOIN games g ON g.id = a.game_id
+ORDER BY a.game_id;
+```
+2. **Records the list durably** before it changes anything: an `acceptedLoss` entry in the permanent ring history (missing key ids, affected game ids with their state at that time, date, and the owners' written acceptance reference), written to the key backup store with the ring. The entry is never deleted. A rerun after a crash recomputes the same list, because no game row has been deleted (no reader or cleanup has run), and merges it into the entry.
+3. In one transaction, expires every affected game that is still in progress, then sets the gate as above. `$2` is the list of affected game ids:
+```sql
+UPDATE games SET expires_at = now()
+WHERE id = ANY($2::uuid[]) AND state <> 'COMPLETED' AND expires_at > now()
+RETURNING id;
+```
+An affected game that is already completed is not changed: its outcome and counts survive, `getResults` returns an internal error for it, and its retention clock is unchanged. An in-progress affected game is expired by the existing rules (section 4): every credential is invalid at once, reads and writes return `GAME_EXPIRED`, and cleanup deletes it without decrypting anything.
+4. `keys:verify` takes the recorded list (`--accepted-loss`, option form for task 9.2a). It excludes only a row that references one of the recorded missing key ids **and** belongs to a recorded game. A row that references a missing key id and belongs to an unrecorded game, a missing key id that is not recorded, any other missing key, and any ciphertext that fails the test-decrypt all fail the verification. The verifier must pass for all other data before any reader restarts. The recorded entry is read from the ring, which `keyverify` already mounts read-only.
+The `keymgmt` role needs these column grants for the accepted-loss run only (no ciphertext), in addition to the reconciliation grants of `deployment.md` 2.1: `SELECT (player_id)` on `secret_codes`, `guesses` and `idempotency_keys`, `SELECT (game_id)` on `token_rotations`, `SELECT (id, game_id)` on `players`, `SELECT (id, state, expires_at)` and `UPDATE (expires_at)` on `games`. The restore procedure runs the reconciliation twice: before `keyverify`, and again after the new key is activated and any staged key is abandoned. Offline activation never runs while any reader is live. When a key is retired (removed from the ring), `keys:retire` removes it from `required_key_ids` under the ring lock. Online activation never accepts `--offline`. Both run under the ring single-writer lock.
 
 **Privileges.** The application role (used by `app`, `cleanup` and `reencrypt`) has `SELECT`, `INSERT`, `UPDATE` and `DELETE` on `instance_ring_reports`, and `SELECT` on `ring_state` for its admission check. The upsert reads columns through `EXCLUDED`, and cleanup's `DELETE` reads `reported_at`. The `keymgmt` role has `SELECT` on `instance_ring_reports` and `SELECT` and `UPDATE` on `ring_state`. The `keyverify` role has `SELECT` on `ring_state` for its admission check (CR-19). `pg_locks` is readable by every role, and advisory locks need no table privilege.
 
@@ -518,7 +539,7 @@ WHERE g.id = batch.id
   AND g.expires_at <= clock_timestamp()   -- re-check on the locked row
 RETURNING g.id;
 
--- Maintenance statements, run once per cleanup run:
+-- Maintenance statements. Replay ciphertext maintenance is its own loop of separately committed batches (see Bounded work).
 -- Replay ciphertext is cleared per batch of owning games. The game row is locked first, so a rotation retry
 -- that holds the lock and is inside its window is never cleared under it, then replay_until is re-checked (C6).
 WITH batch AS (
@@ -535,8 +556,9 @@ SET token_ciphertext = NULL, token_key_id = NULL
 FROM batch
 WHERE t.game_id = batch.id
   AND t.token_ciphertext IS NOT NULL
-  AND t.replay_until <= clock_timestamp();   -- re-check on the locked game
+  AND t.replay_until <= clock_timestamp();   -- re-check on the locked game. The loop stops when this updates no rows
 
+-- Rate-limit and presence-report pruning, once per run:
 DELETE FROM rate_limits
 WHERE ctid IN (SELECT ctid FROM rate_limits
                WHERE refilled_at < clock_timestamp() - interval '1 hour'
@@ -556,6 +578,7 @@ Properties:
 - **Concurrent with live traffic.** Live requests hold `FOR UPDATE` on the game row. `SKIP LOCKED` leaves in-flight games to a later run. A game refreshed between selection and deletion fails the re-check. Each live request decides expiry under its own lock, so a request cannot succeed on a game that cleanup could delete.
 - **Concurrent with itself.** Two runs lock disjoint rows because of `SKIP LOCKED`.
 - **Bounded work.** Loop batches until a batch deletes fewer rows than the batch size, then report the total.
+- **Replay ciphertext maintenance has its own loop.** After the expired-game loop, the maintenance statement above runs repeatedly, each batch its own transaction and commit, until a batch updates no rows. The loop is not bounded by the number of expired-game deletions, so more than `CLEANUP_BATCH_SIZE` eligible games are all cleared in one run when none is locked. A game skipped because another transaction locks it (`SKIP LOCKED`) keeps its ciphertext until a later run retries it. Locked games are not selected, so when only locked games remain the next batch updates no rows and the loop ends. Those games are retried on a later run. The loop never decrypts.
 - **Dry run.** `--dry-run` runs `SELECT count(*)` with the same predicate and deletes nothing.
 - **Logging.** Only counts and durations (R11.8).
 
