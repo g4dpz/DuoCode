@@ -15,7 +15,7 @@ Project status
 
 The first development milestone is a fully playable backend, accessible through its REST API. The game engine, persistence layer, API and automated test infrastructure will be validated before development of the graphical interface begins.
 
-The project is currently at the specification stage: requirements, architecture, API contract, database schema, security assessment and licensing have been approved by the owners (Phase 1 in tasks.md), and no application code has been written yet. Implementation starts only when the owners authorise Phase 2. Product naming, visual identity and commercial arrangements remain subject to review.
+The project is currently at the specification stage: requirements, architecture, API contract, database schema, security assessment and licensing have been approved by the owners (Phase 1 in tasks.md), and Phase 2 (implementation) was authorised on 22 November 2026. No application code has been written yet. Product naming, visual identity and commercial arrangements remain subject to review.
 
 The game
 

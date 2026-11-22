@@ -2,7 +2,7 @@
 
 History: the revision 3.1 content was published on `spec/revision-3.1-review` and merged to `main` (PR #1, `b88580d`). The strict hard-stop correction (CR-9, section 3A) is on branch `spec/key-usage-strict-hard-stop`, created from that `main`. Commit hashes are reported with the branches, because a file cannot contain its own commit hash.
 
-The project stays in specification and approval mode. This package contains no application code, no database migration and no implementation task. **All six gates are signed off. Gate 2's reopened sentence in `design.md` section 16 was re-confirmed the same day (see `tasks.md` 1.2). Task 1.9 (Phase 1 complete) is not. The task 1.8 fixes (CR-25, section 3C) reopened parts of Gates 1 to 5, which are awaiting owner confirmation. Task 1.7 is confirmed (2026-11-22). Task 1.8 awaits the owner marking it complete.** The architecture (Deno, TypeScript, Oak, PostgreSQL, Docker Compose, Caddy) is unchanged.
+This package contains no application code, no database migration and no implementation task. **All six gates are signed off. Gate 2's reopened sentence in `design.md` section 16 was re-confirmed the same day (see `tasks.md` 1.2). The task 1.8 fixes (CR-25, section 3C) reopened parts of Gates 1 to 5, which were re-confirmed on 2026-11-22. Tasks 1.7 and 1.8 are complete. Task 1.9 is signed off: Phase 1 is complete and Phase 2 is authorised (2026-11-22).** The architecture (Deno, TypeScript, Oak, PostgreSQL, Docker Compose, Caddy) is unchanged.
 
 ## 1. Gate status
 
@@ -16,7 +16,7 @@ The project stays in specification and approval mode. This package contains no a
 | 6 | 1.6 | Licensing files and contributor arrangements | **Signed off 2026-11-22**, David Johnson (G4DPZ). LI-1, LI-2 and LI-4 given; LI-3 (legal review) outstanding |
 | Prerequisite | 1.7 | README confirmed | **Done 2026-11-22**, David Johnson (G4DPZ), "merge 9 and confirm 1.7" |
 | Prerequisite | 1.8 | Copilot review of the specification | Findings fixed (section 3C). Awaits the owner marking it complete |
-| Sign-off | 1.9 | Phase 1 complete, Phase 2 authorised | Not authorised |
+| Sign-off | 1.9 | Phase 1 complete, Phase 2 authorised | **Signed off 2026-11-22**, David Johnson (G4DPZ), owner statement "do all" |
 
 ## 2. What to read for each gate
 
@@ -518,7 +518,7 @@ Inputs given by David Johnson (G4DPZ) on 2026-11-22:
 ## 7. Outstanding issues
 
 1. No technical decision is pending. RD-14 is approved.
-2. Gates 1 (requirements), 2 (architecture), 3 (OpenAPI), 4 (schema and state machine) and 5 (security assessment) are signed off as of 2026-11-22, and Gate 6 (licensing) is signed off with LI-3 outstanding. The task 1.8 fixes (CR-25, section 3C) reopened parts of Gates 1 to 5, which are awaiting owner confirmation (`tasks.md` 1.1 to 1.5). Task 1.7 is confirmed. Task 1.8 awaits the owner marking it complete. Task 1.9 awaits your explicit sign-off. Gate 2 was reopened for the CR-24 command-list wording in `deployment.md` 2.1 and 6.3 and `design.md` section 3, and re-confirmed on 2026-11-22. Gate 2's reopened sentence in `design.md` section 16 was re-confirmed the same day (see `tasks.md` 1.2). Operational inputs OI-1 (Caddy build owner) and OI-2 (backup provider) are open.
+2. Gates 1 (requirements), 2 (architecture), 3 (OpenAPI), 4 (schema and state machine) and 5 (security assessment) are signed off as of 2026-11-22, and Gate 6 (licensing) is signed off with LI-3 outstanding. The task 1.8 fixes (CR-25, section 3C) reopened parts of Gates 1 to 5, which were re-confirmed on 2026-11-22 (`tasks.md` 1.1 to 1.5). Tasks 1.7 and 1.8 are complete. Task 1.9 is signed off and Phase 2 is authorised. Gate 2 was reopened for the CR-24 command-list wording in `deployment.md` 2.1 and 6.3 and `design.md` section 3, and re-confirmed on 2026-11-22. Gate 2's reopened sentence in `design.md` section 16 was re-confirmed the same day (see `tasks.md` 1.2). Operational inputs OI-1 (Caddy build owner) and OI-2 (backup provider) are open.
 3. LI-3, legal review of the contribution terms and the dual-licensing position (section 6). With no separate contributor licence agreement (LI-2), commercial relicensing of outside contributions rests on `CONTRIBUTING.md` section 2 point 2.
 4. The (APP) tests and the restore and rotation drills with real tools (section 5.4).
 5. Proposals approved at Gate 2 (no further approval needed): proxy access logs 14 days with no client IP, backups encrypted to both founders and stored off the VPS, and the 7-day target for high or critical proxy advisories. Operational inputs still needed: OI-1, the named owner of the Caddy build maintenance, and OI-2, the off-VPS backup provider. Implementation tasks, not approvals: re-verifying the Caddy pins at build time (task 9.3), and the privacy notice and UK GDPR wording.

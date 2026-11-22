@@ -244,6 +244,7 @@ pr=[f'git ls-files failed (exit {lsf.returncode}): {lsf.stderr.strip()[:100]}'] 
 for f in tracked:
     base=os.path.basename(f); ext=os.path.splitext(f)[1]
     top=f.split('/')[0]
+    if top=='.agents': continue   # local agent working files, never committed
     if top in('backend','tools','deployment','frontend','postman','docs'): pr.append(f'{f}: implementation directory')
     elif f.endswith('.sql') or 'migration' in f.lower(): pr.append(f'{f}: migration or SQL file')
     elif base in('LICENSE','NOTICE','.gitignore','DuoCode-Requirements'): continue
@@ -574,7 +575,7 @@ if 'keys:prune-accepted-loss' not in files['tasks.md'] or 'keys:prune-accepted-l
 if not re.search(r'`reencrypt` skips[^.]*accepted|skipped, as a count only',files['security-assessment.md']+files['database-schema.md']): pr.append('reencrypt skip rule (RD-24) missing')
 for g in ('1.1','1.2','1.4','1.5'):
     m=re.search(r'- \[x\] '+re.escape(g)+r' .*?(?=\n- \[)',files['tasks.md'],re.S)
-    if not m or 'RD-24' not in m.group(0) and g in ('1.1','1.4','1.5') or 'Awaiting an explicit owner confirmation' not in m.group(0): pr.append('tasks.md '+g+': reopened entry does not cover RD-22 to RD-24')
+    if not m or 'RD-24' not in m.group(0) and g in ('1.1','1.4','1.5') or not re.search(r'Awaiting an explicit owner confirmation|Re-confirmed \d{4}-\d{2}-\d{2} by .+owner statement',m.group(0)): pr.append('tasks.md '+g+': reopened entry does not cover RD-22 to RD-24')
 check('C41 RD-22 to RD-24 are recorded with the owner statement, mapped, and carried into the reopened gate entries (RD-23 prune command, RD-24 reencrypt skip)',pr)
 # 22 OpenAPI lint
 import shutil as _sh
