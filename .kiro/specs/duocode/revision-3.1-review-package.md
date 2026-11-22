@@ -375,7 +375,7 @@ Inputs only you can give. I have not invented any of them:
 ## 7. Outstanding issues
 
 1. No technical decision is pending. RD-14 is approved.
-2. All six gates await your explicit sign-off. Nothing is signed off.
+2. Gate 1 (requirements) is signed off as of 2026-11-22, with R19's licensing text pending Gate 6. Gates 2 to 6 await your explicit sign-off.
 3. LI-1 to LI-4 (section 6).
 4. The (APP) tests and the restore and rotation drills with real tools (section 5.4).
 5. Drafting proposals not explicitly approved: proxy access-log retention (14 days, no IP by default), backup recipients, a named owner for the Caddy build, the 7-day target for critical proxy security upgrades, re-verification of the Caddy version pins at build time. The privacy notice and UK GDPR wording remain tasks.

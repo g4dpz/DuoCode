@@ -162,7 +162,7 @@ for idx,l in enumerate(lines):
         m=re.match(r'- \[x\] (1\.[1-6]) \*\*Gate',l)
         nxt=lines[idx+1] if idx+1<len(lines) else ''
         if not m: pr.append('marked done but not a Phase 1 gate: '+l[:60])
-        elif not re.search(r'Signed off \d{4}-\d{2}-\d{2} by .+owner statement',nxt): pr.append(f'gate {m.group(1)} marked done without a recorded owner sign-off')
+        elif not re.search(r'Signed off \d{4}-\d{2}-\d{2} by .+owner statement "[^"]*\S[^"]*"',nxt): pr.append(f'gate {m.group(1)} marked done without a recorded owner sign-off')
 if re.search(r'^- \[x\] 1\.9',tk,re.M) and len(re.findall(r'^- \[x\] 1\.[1-6] ',tk,re.M))<6: pr.append('1.9 marked done before all six gates')
 signed=re.findall(r'^- \[x\] (1\.[1-6]) ',tk,re.M)
 check(f'C15 only Phase 1 gates are marked done, each with a recorded owner sign-off (signed: {", ".join(signed) or "none"})',pr)
