@@ -14,7 +14,7 @@ The **Status** column records **decision provenance**: where the requirement cam
 | **A+RD** | As A, but part of the requirement still depends on an input from the owners (only the Gate 6 licensing inputs LI-1 to LI-4 remain) |
 | **B** | Taken from the baseline requirements without a separate owner decision. It was approved explicitly as part of Gate 1 |
 
-Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and state machine, 1.5 security assessment, 1.6 licensing and contributor arrangements. Current state: **Gates 1.1 and 1.2 signed off on 2026-11-22** (R19 licensing text pending 1.6). Gates 1.3 to 1.6 **not signed off**. A requirement is fully approved only when every gate listed in its row is signed off.
+Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and state machine, 1.5 security assessment, 1.6 licensing and contributor arrangements. Current state: **Gates 1.1, 1.2 and 1.3 signed off on 2026-11-22** (R19 licensing text pending 1.6). Gates 1.4 to 1.6 **not signed off**. A requirement is fully approved only when every gate listed in its row is signed off.
 
 ## 2. Matrix
 
@@ -141,6 +141,7 @@ Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and 
 | CR-6 | R19.1 | `README.md` |
 | CR-7 | R19.5 | `revision-3.1-review-package.md` |
 | CR-8 | R9.4, R9.8 | `database-schema.md` `rematch_markers` |
+| CR-22 | R10.7, R12.3, R20.7 | `openapi.yaml` draft 6, `check-consistency.py` C25 |
 | CR-21 | R10.13, R10.14 | `deployment.md` 6.1, `security-assessment.md` 3.6, `tasks.md` 9.6a, `test-strategy.md` TS-OPS |
 | CR-20 | R10.13 | `deployment.md` 2.1, 6.1, `security-assessment.md` 3.6, `test-strategy.md` TS-ENC, TS-OPS |
 | CR-19 | R10.13, R10.14 | `database-schema.md` 6.2a, `deployment.md` 2.1, 6.1, `security-assessment.md` 3.6, `test-strategy.md` TS-ENC |

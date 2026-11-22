@@ -2,7 +2,7 @@
 
 History: the revision 3.1 content was published on `spec/revision-3.1-review` and merged to `main` (PR #1, `b88580d`). The strict hard-stop correction (CR-9, section 3A) is on branch `spec/key-usage-strict-hard-stop`, created from that `main`. Commit hashes are reported with the branches, because a file cannot contain its own commit hash.
 
-The project stays in specification and approval mode. This package contains no application code, no database migration and no implementation task. **Gates 1 and 2 are signed off. Gates 3 to 6 are not.** The architecture (Deno, TypeScript, Oak, PostgreSQL, Docker Compose, Caddy) is unchanged.
+The project stays in specification and approval mode. This package contains no application code, no database migration and no implementation task. **Gates 1, 2 and 3 are signed off. Gates 4 to 6 are not.** The architecture (Deno, TypeScript, Oak, PostgreSQL, Docker Compose, Caddy) is unchanged.
 
 ## 1. Gate status
 
@@ -10,7 +10,7 @@ The project stays in specification and approval mode. This package contains no a
 |---|---|---|---|
 | 1 | 1.1 | Requirements | **Signed off 2026-11-22**, David Johnson (G4DPZ), as at `53c46df`. R19 licensing text pending Gate 6 |
 | 2 | 1.2 | Architecture | **Signed off 2026-11-22**, David Johnson (G4DPZ), as at `bcba9f6`, as written (online rotation kept). OI-1 and OI-2 open |
-| 3 | 1.3 | OpenAPI specification | Not signed off |
+| 3 | 1.3 | OpenAPI specification | **Signed off 2026-11-22**, David Johnson (G4DPZ), as `openapi.yaml` draft 6 (CR-22: `500`/`503` on every operation, `429` on admin) |
 | 4 | 1.4 | Database schema and state machine | Not signed off |
 | 5 | 1.5 | Security assessment | Not signed off |
 | 6 | 1.6 | Licensing files and contributor arrangements | Not signed off. Inputs LI-1 to LI-4 outstanding |
@@ -375,7 +375,7 @@ Inputs only you can give. I have not invented any of them:
 ## 7. Outstanding issues
 
 1. No technical decision is pending. RD-14 is approved.
-2. Gates 1 (requirements) and 2 (architecture) are signed off as of 2026-11-22, with R19's licensing text pending Gate 6. Gates 3 to 6 await your explicit sign-off. Operational inputs OI-1 (Caddy build owner) and OI-2 (backup provider) are open.
+2. Gates 1 (requirements), 2 (architecture) and 3 (OpenAPI) are signed off as of 2026-11-22, with R19's licensing text pending Gate 6. Gates 4 to 6 await your explicit sign-off. Operational inputs OI-1 (Caddy build owner) and OI-2 (backup provider) are open.
 3. LI-1 to LI-4 (section 6).
 4. The (APP) tests and the restore and rotation drills with real tools (section 5.4).
 5. Proposals approved at Gate 2 (no further approval needed): proxy access logs 14 days with no client IP, backups encrypted to both founders and stored off the VPS, and the 7-day target for high or critical proxy advisories. Operational inputs still needed: OI-1, the named owner of the Caddy build maintenance, and OI-2, the off-VPS backup provider. Implementation tasks, not approvals: re-verifying the Caddy pins at build time (task 9.3), and the privacy notice and UK GDPR wording.

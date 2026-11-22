@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DuoCode API
-  version: 1.0.0-draft.5
+  version: 1.0.0-draft.6
   summary: Two-player asynchronous code-breaking game.
   description: |
     Draft contract for the DuoCode backend MVP. Requirements: `.kiro/specs/duocode/requirements.md`.
@@ -43,6 +43,10 @@ info:
     **Rate limits.** Per-IP and per-player limits are shared across all server instances. Every endpoint can return
     `429 RATE_LIMITED` with `Retry-After`.
     If the shared rate-limit store is unavailable the server fails closed with `503`.
+
+    **Errors on every operation.** Every operation can return `503 SERVICE_UNAVAILABLE` with `Retry-After` (the shared
+    rate-limit store is unavailable, a database lock timed out, or no encryption unit can be obtained) and
+    `500 INTERNAL_ERROR` (an unexpected error, including a failure to decrypt stored data). Both bodies are generic.
   license:
     name: AGPL-3.0-only
     identifier: AGPL-3.0-only
@@ -86,6 +90,7 @@ paths:
         '400': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '500': { $ref: '#/components/responses/InternalError' }
   /games/{gameId}/join:
     post:
       tags: [Games]
@@ -118,6 +123,8 @@ paths:
         '409': { $ref: '#/components/responses/GameFull' }
         '410': { $ref: '#/components/responses/GameExpired' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /games/{gameId}/secret-code:
     put:
       tags: [Play]
@@ -155,6 +162,7 @@ paths:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '500': { $ref: '#/components/responses/InternalError' }
   /games/{gameId}:
     get:
       tags: [Play]
@@ -176,6 +184,8 @@ paths:
         '401': { $ref: '#/components/responses/InvalidCredentials' }
         '410': { $ref: '#/components/responses/GameExpired' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /games/{gameId}/guesses:
     post:
       tags: [Play]
@@ -238,6 +248,7 @@ paths:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '500': { $ref: '#/components/responses/InternalError' }
   /games/{gameId}/progress:
     get:
       tags: [Play]
@@ -258,6 +269,8 @@ paths:
         '401': { $ref: '#/components/responses/InvalidCredentials' }
         '410': { $ref: '#/components/responses/GameExpired' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /games/{gameId}/results:
     get:
       tags: [Play]
@@ -286,6 +299,8 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /games/{gameId}/access-token/rotate:
     post:
       tags: [Credentials]
@@ -339,6 +354,7 @@ paths:
         '410': { $ref: '#/components/responses/GameExpired' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '500': { $ref: '#/components/responses/InternalError' }
   /games/{gameId}/rematch-capability:
     post:
       tags: [Rematch]
@@ -371,6 +387,8 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /rematches:
     post:
       tags: [Rematch]
@@ -406,6 +424,8 @@ paths:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '410': { $ref: '#/components/responses/GameExpired' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /healthz:
     get:
       tags: [Operations]
@@ -436,6 +456,7 @@ paths:
                 required: [status]
                 properties:
                   status: { type: string, enum: [unavailable] }
+        '500': { $ref: '#/components/responses/InternalError' }
   /admin/metrics:
     servers:
       - url: http://admin.internal:8081
@@ -456,6 +477,9 @@ paths:
             text/plain:
               schema: { type: string }
         '401': { $ref: '#/components/responses/InvalidCredentials' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /admin/cleanup:
     servers:
       - url: http://admin.internal:8081
@@ -481,6 +505,9 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/CleanupResult' }
         '401': { $ref: '#/components/responses/InvalidCredentials' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 components:
   securitySchemes:
     accessToken:
@@ -543,6 +570,14 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
+    InternalError:
+      description: |
+        Unexpected server error, including a failure to decrypt stored data (authentication failure or unknown key id,
+        R10). The body is generic and never contains detail, request values, codes, guesses or tokens.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { error: { code: INTERNAL_ERROR, message: Internal error., requestId: 9c2e4f10 } }
     ServiceUnavailable:
       description: Temporarily unavailable, for example the shared rate-limit store or a lock timed out. Retry later.
       headers:
