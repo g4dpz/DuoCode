@@ -242,6 +242,8 @@ No inline findings. Copilot marked the PR "Needs a closer look" and named two co
 
 ## 3C. Task 1.8 whole-specification review (Copilot, PRs #12 to #16, snapshot 732d4fb)
 Copilot reviewed the whole specification in five group PRs (#12 to #16) against snapshot `732d4fb`: 52 inline findings. The triage is in the task record (`triage.md`). All 52 are listed below. The changes are CR-25 in `requirements.md`. Gates 1 to 5 are reopened for the changed parts only, and those parts are awaiting owner confirmation (`tasks.md` 1.1 to 1.5). Gate 6 is untouched (`LICENSE`, `NOTICE` and `CONTRIBUTING.md` unchanged). Task 1.8 awaits the owner marking it complete.
+Copilot review of the final PR #17 commit `2aae5ed` (the four final wording fixes) was skipped by owner decision (David Johnson, 2026-11-22): Copilot replied that it was unable to review for insufficient remaining quota. It is carried as task 9.6b in `tasks.md`.
+
 | ID | Where | Disposition | Where fixed |
 |---|---|---|---|
 | A1 | `copilot-instructions.md:21` | Fixed in CR-25 | `.github/copilot-instructions.md`: decrypted-value ban limited to logs, diagnostics, errors and non-contract responses |
