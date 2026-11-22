@@ -244,6 +244,8 @@ No inline findings. Copilot marked the PR "Needs a closer look" and named two co
 Copilot reviewed the whole specification in five group PRs (#12 to #16) against snapshot `732d4fb`: 52 inline findings. The triage is in the task record (`triage.md`). All 52 are listed below. The changes are CR-25 in `requirements.md`. Gates 1 to 5 are reopened for the changed parts only, and those parts are awaiting owner confirmation (`tasks.md` 1.1 to 1.5). Gate 6 is untouched (`LICENSE`, `NOTICE` and `CONTRIBUTING.md` unchanged). Task 1.8 awaits the owner marking it complete.
 Copilot review of the final PR #17 commit `2aae5ed` (the four final wording fixes) was skipped by owner decision (David Johnson, 2026-11-22): Copilot replied that it was unable to review for insufficient remaining quota. It is carried as task 9.6b in `tasks.md`.
 
+**Deferral record (owner decision, David Johnson (G4DPZ), 2026-11-22, statement "go ahead and defer any further findings to phase 9").** The Copilot round on `2aae5ed` raised no findings, so no finding moved to Phase 9 and no Phase 9 item was added for findings. The only Phase 9 item from this round is task 9.6b (the skipped review itself). No review thread was left open for deferral. The gate parts reopened under tasks 1.1, 1.2, 1.4 and 1.5 stay awaiting an explicit owner confirmation.
+
 | ID | Where | Disposition | Where fixed |
 |---|---|---|---|
 | A1 | `copilot-instructions.md:21` | Fixed in CR-25 | `.github/copilot-instructions.md`: decrypted-value ban limited to logs, diagnostics, errors and non-contract responses |
