@@ -161,6 +161,7 @@ Application services should remain stateless, with PostgreSQL providing the auth
 Development approach
 
 Development is deliberately divided into stages.
+The roadmap stages below are product stages. The phases in `tasks.md` are authoritative for what "authorise Phase 2" means.
 
 Phase 1 — Backend MVP
 
@@ -216,7 +217,9 @@ Example:
 deno task simulate \
   --games 1000 \
   --seed 12345 \
-  --concurrency 20
+  --concurrency 20 \
+  --test-deployment
+The `--test-deployment` flag is mandatory: the simulator uses predictable rotation keys and must only be pointed at a test deployment, never at production.
 Simulation results will include game completion statistics, wins and draws, average and maximum guesses, API errors, response latency, concurrency failures and unexpected outcomes.
 
 The objective is to expose problems in game logic, API behaviour, persistence and concurrency before the web interface is introduced.

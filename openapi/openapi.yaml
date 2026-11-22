@@ -181,6 +181,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/GameStatus' }
+        '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/InvalidCredentials' }
         '410': { $ref: '#/components/responses/GameExpired' }
         '429': { $ref: '#/components/responses/RateLimited' }
@@ -266,6 +267,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Progress' }
+        '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/InvalidCredentials' }
         '410': { $ref: '#/components/responses/GameExpired' }
         '429': { $ref: '#/components/responses/RateLimited' }
@@ -291,6 +293,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Results' }
+        '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/InvalidCredentials' }
         '410': { $ref: '#/components/responses/GameExpired' }
         '422':
@@ -374,6 +377,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MintRematchCapabilityResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/InvalidCredentials' }
         '409':
           description: A rematch has already been created for this game at some time (`REMATCH_ALREADY_CREATED`).
@@ -606,13 +610,23 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
   schemas:
+    NicknameInput:
+      type: string
+      description: |
+        Raw nickname exactly as the client sent it, before trimming. This schema deliberately has no `maxLength` and no
+        `pattern`: the rules apply to the **trimmed** value, so a value with surrounding white space must not be rejected
+        or accepted on its untrimmed length. The server trims leading and trailing white space first, then applies the
+        rules of `Nickname` (1 to 24 Unicode code points, no control characters, no bidirectional embedding, override
+        or isolate controls) and returns `INVALID_NICKNAME` for a violation. The length and class checks are made by the
+        server, not by schema validation.
     Nickname:
       type: string
       minLength: 1
       maxLength: 24
       pattern: '^[^\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]+$'
       description: |
-        Display label. The server trims leading and trailing white space first, then requires 1 to 24 Unicode code points
+        Normalised display label: the trimmed value that the server stores and returns, as in responses. Requests use `NicknameInput`.
+        The server trims leading and trailing white space first, then requires 1 to 24 Unicode code points
         and no control characters (category Cc) and none of U+202A to U+202E and U+2066 to U+2069 (bidirectional
         embedding, override and isolate controls). Malformed Unicode is rejected. Other Unicode, including directional
         marks, joiners and emoji sequences, is accepted. The trimmed value is stored and returned
@@ -641,7 +655,7 @@ components:
       required: [nickname]
       additionalProperties: false
       properties:
-        nickname: { $ref: '#/components/schemas/Nickname' }
+        nickname: { $ref: '#/components/schemas/NicknameInput' }
     CreateGameResponse:
       type: object
       required: [gameId, seat, state, accessToken, invitationToken, expiresAt]
@@ -659,7 +673,7 @@ components:
       additionalProperties: false
       properties:
         invitationToken: { type: string }
-        nickname: { $ref: '#/components/schemas/Nickname' }
+        nickname: { $ref: '#/components/schemas/NicknameInput' }
     JoinGameResponse:
       type: object
       required: [gameId, seat, state, accessToken, expiresAt]
@@ -792,7 +806,7 @@ components:
       required: [nickname]
       additionalProperties: false
       properties:
-        nickname: { $ref: '#/components/schemas/Nickname' }
+        nickname: { $ref: '#/components/schemas/NicknameInput' }
     CleanupResult:
       type: object
       required: [dryRun, gamesDeleted, batches, durationMs]

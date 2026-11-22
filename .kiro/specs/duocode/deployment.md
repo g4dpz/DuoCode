@@ -26,7 +26,7 @@ scheduled:  cleanup   (hourly, dedicated service)
 | `cleanup` | Same image as `app`, loop running `deno task cleanup` every `CLEANUP_INTERVAL_MINUTES` | The only scheduler of cleanup (R21.2). Mounts the key ring (cleanup does not decrypt, but shares the start-up check). Admin endpoint is for manual runs |
 | `backup` | `pg_dump` of the database, compressed and encrypted | Section 5. Never mounts the key ring |
 
-Networks: `edge` (proxy and app public listener) and `internal` (app, db, migrate, cleanup, backup, admin listener). The database and the admin listener are never on `edge`. Operators reach the admin listener through an SSH tunnel or `docker compose exec`.
+Networks: `edge` (proxy and app public listener) and `internal` (app, db, migrate, cleanup, backup, admin listener). The database is never on `edge`. The `app` service is attached to both networks, so network membership alone does not isolate the admin listener. The admin listener therefore binds only to the `app` address on the `internal` network (`ADMIN_LISTEN_ADDR`, required, never loopback and never all interfaces), so it does not accept connections on the `edge` interface (RD-17). Operators reach the admin listener through an SSH tunnel or `docker compose exec`.
 
 ## 2. Application permissions and hardening
 
@@ -44,7 +44,7 @@ Ring changes need write access to the ring and to the key backup store. The appl
 |---|---|---|
 | Ring source file (host path, owned by a dedicated key-management user, mode 0600, directory 0700) | Read and write | No access to the source. They receive it read-only as the Docker secret `duocode_code_keyring` at start-up |
 | Key backup store credentials | Yes, its own Docker secret | No |
-| Database | Its own role `duocode_keymgmt`: `SELECT`, `INSERT` and `UPDATE` on `key_usage`, `SELECT` on `instance_ring_reports`, `SELECT` and `UPDATE` on `ring_state`, `SELECT (key_id)` on `secret_codes` and `guesses` and `SELECT (token_key_id)` on `token_rotations` (column grants for the reconciliation check, no ciphertext, CR-20), and the ring advisory lock. No other access to game tables | Application role, plus `SELECT`, `INSERT`, `UPDATE` and `DELETE` on `instance_ring_reports` (the upsert reads through `EXCLUDED`, cleanup prunes), `SELECT` on `ring_state` (admission) and the presence lock (CR-17, CR-19) |
+| Database | Its own role `duocode_keymgmt`: `SELECT`, `INSERT` and `UPDATE` on `key_usage`, `SELECT` on `instance_ring_reports`, `SELECT` and `UPDATE` on `ring_state`, `SELECT (key_id)` on `secret_codes` and `guesses` and `SELECT (token_key_id)` on `token_rotations` and `SELECT (fingerprint_key_id)` on `idempotency_keys` (column grants for the reconciliation check, no ciphertext, CR-20), and the ring advisory lock. No other access to game tables | Application role, plus `SELECT`, `INSERT`, `UPDATE` and `DELETE` on `instance_ring_reports` (the upsert reads through `EXCLUDED`, cleanup prunes), `SELECT` on `ring_state` (admission) and the presence lock (CR-17, CR-19) |
 | Network | Database and backup store only | Unchanged |
 | Started by | An operator, on demand (`docker compose run --rm keymgmt <command>`) | Compose |
 
@@ -84,7 +84,7 @@ Rules:
 - Request body limit 1 KiB on `/api/v1/*`.
 - Request and header timeouts to limit slow clients.
 - `/admin/*` is not routed. The proxy answers `404`.
-- Access log format: time, method, route path without query string, status, duration, request id. No headers, no query strings, no bodies, and no client IP by default. Retention 14 days, then deleted (approved at Gate 2). If the owners enable IP logging for abuse investigation, a retention period must be set and the privacy notice updated.
+- Access log format: time, method, a fixed route template (for example `/api/v1/games/{id}/guesses`) or one fixed label for a path that matches no route, never the raw path or query string, status, duration, request id. No headers, no query strings, no bodies, and no client IP by default. Retention 14 days, then deleted (approved at Gate 2). If the owners enable IP logging for abuse investigation, a retention period must be set and the privacy notice updated.
 - Adds a request id header the application also logs, and the forwarded client IP header. The application trusts it only from `TRUSTED_PROXY_CIDRS` (RD-9).
 - Rate limiting module: stock Caddy has none. The proxy is built from a pinned, reproducible custom build that includes `github.com/mholt/caddy-ratelimit` (RD-1 approved). Build files, pins, provenance and maintenance are in section 4.3. The alternative, Nginx with `limit_req`, stays documented as the fallback.
 
@@ -115,14 +115,14 @@ For owner approval. Values are configuration. They are tuned from measured load 
 | Scope | Applies to | Capacity | Refill per minute |
 |---|---|---|---|
 | `pl:guess` | `POST /games/{id}/guesses` | 10 | 30 |
-| `pl:rotate` | `POST /games/{id}/access-token/rotate` (including replays) | 3 | 0.1 (6 per hour) |
+| `pl:rotate` | `POST /games/{id}/access-token/rotate` (validated rotation replays are exempt, RD-18) | 3 | 0.1 (6 per hour) |
 | `pl:mint` | `POST /games/{id}/rematch-capability` | 3 | 0.1 |
 | `pl:read` | Status, progress, results | 30 | 60 |
 | `pl:write` | Secret code submission | 20 | 30 |
 
 Reasoning: a person guesses a few times a minute at most, so 30 per minute with a burst of 10 is generous and still caps a script at 10 guesses well before exhaustion matters. Clients polling every 5 seconds use 12 reads per minute. Creating and joining are rare, so low refill rates stop game-creation floods without hurting households behind one address. Failed credential checks refill slowly so that guessing tokens is throttled to about 10 attempts per minute per IP after a burst of 20. Simulator and load tests use a separate environment with raised IP limits (`simulator-design.md`).
 
-Order of events for every authenticated request: validate, preliminary credential lookup (grants nothing), rate-limit updates as separate autocommit statements, then the request transaction with the authoritative credential check (`design.md` section 5.1). A denied request does no further work.
+Order of events for every authenticated request: validate, check that the `ip:authfail` bucket has a token available (empty: `429` before any lookup), preliminary credential lookup (grants nothing), rate-limit updates as separate autocommit statements, then the request transaction with the authoritative credential check (`design.md` section 5.1). Failures are charged to `ip:authfail` outside the game transaction, after rollback when authoritative validation fails. A token the preliminary lookup does not find skips only the player buckets and the game transaction. A token it knows to be revoked is rejected before any player bucket is charged (RD-20), except for rotation requests (RD-18). A denied request does no further work.
 
 Behaviour on denial: `429 RATE_LIMITED` with `Retry-After`. If the limiter store fails, the request gets `503` (fail closed, RD-2). Repeated failed credential checks are throttled by the `ip:authfail` bucket, which needs no extra state (the revision 3 idea of a timed block after repeated failures was dropped).
 
@@ -143,7 +143,7 @@ Caddy is retained. Because stock Caddy has no rate-limit module, the project bui
 
 **Files** (committed under `deployment/caddy/`, created in Phase 9):
 - `go.mod`, `go.sum`: the module that requires the pinned Caddy and module versions.
-- `main.go`: imports Caddy's `cmd` package and the rate-limit module, and nothing else.
+- `main.go`: imports Caddy's `cmd` package, the standard module set (blank import of `github.com/caddyserver/caddy/v2/modules/standard`, without which the proxy has no HTTP server, TLS or reverse proxy) and the rate-limit module, and nothing else.
 - `Dockerfile`: multi-stage build. Builder stage uses the pinned Go image. Runtime stage uses a pinned minimal base. The Compose file references the resulting image by digest.
 - `BUILD-PINS.md`: every version and digest above, with the date verified.
 - `BUILD-RECORD.md`: one entry per release: binary sha256, image digest, SBOM digest, builder, date, CI run id.
@@ -221,6 +221,7 @@ Situation B, a needed key is missing from every ring copy:
 3. Affected in-progress games cannot continue and are abandoned. They expire and are deleted by cleanup. Affected completed games lose their codes and guesses in results (results return an internal error for them), while outcomes and counts survive.
 4. Other games are unaffected. The application starts only if the active key is present. If the active key is missing, generate a new ring, accept the loss of in-flight data under the old key, and record the incident.
 5. Do not delete ciphertext rows by hand. Let retention remove them.
+6. **Offline recovery so the service can start again (RD-19).** With `app` and `cleanup` stopped (no reader live), the owners accept in writing that the data under the missing key is lost. The operator then runs `keys:reconcile-gate` in the `keymgmt` job with the missing key ids named as accepted loss. The reconciliation then sets the admission gate to the keys the newest ring loads, instead of stopping because ciphertext references a key id that is not in the ring (`database-schema.md` section 6.2a). The affected games are abandoned: they are not played or shown, they expire, and cleanup deletes them without decrypting. The fingerprint history entry, the key registry row and the sealed counter of the missing key are kept, so its identifier is never reused and no counter is lowered. `app` and `cleanup` start only after the gate is reconciled and `keys:verify` has been run for the remaining keys. This situation never allows a start with the gate unreconciled.
 
 Situation C, suspected key compromise: follow `security-assessment.md` section 3.6 (compromise response). Keep the compromised key `DECRYPT_ONLY` until the owners decide how to handle backups under it.
 
@@ -233,7 +234,7 @@ Follow the checklist in `security-assessment.md` section 3.9: `keys:verify` show
 The same procedure applies whether the rotation is routine, prompted by the warning at 2^27, or late because the key already passed 2^28 (`ROTATION_OVERDUE`, reservations still granted). The rules are defined once in `database-schema.md` section 6.3 and `security-assessment.md` sections 3.6 and 3.6a. It has **three phases**, so that no instance ever meets ciphertext it cannot decrypt:
 
 **Phase 1, stage.**
-1. `deno task keys:generate`, run in the `keymgmt` job (section 2.1). It writes the key material directly into the protected ring source file and prints only the identifier, status and fingerprint prefix, never the material. The identifier is above `highestKeyId`. The tool rejects duplicate or previously used key material, registers the key (row and fingerprint), reserves at least one unit, encrypts the self-test value, and prints the ring entry.
+1. `deno task keys:generate`, run in the `keymgmt` job (section 2.1). It writes the key material directly into the protected ring source file and prints only the identifier, status and fingerprint prefix, never the material. The identifier is above `highestKeyId`. The tool rejects duplicate or previously used key material, registers the key (row and fingerprint), reserves at least one unit and encrypts the self-test value. Its output is metadata only.
 2. Add the key to the ring as `STAGED` (it decrypts, never encrypts), raise the ring `generation`, and back up the ring and its fingerprint history (section 5).
 3. **Restart every live reader** (`app` and `cleanup`), one after another. `reencrypt` and `keyverify` must not be running during phases 1 and 2. Each restarted process takes its presence lock and reports its loaded ring before it serves requests. `keys:activate` in phase 2 checks the roster (CR-16, CR-17).
 
@@ -267,7 +268,7 @@ A key that has been `DECRYPT_ONLY` never becomes `ACTIVE` again. Restore (6.1) u
 
 - `/admin/metrics` (Prometheus text format) on the admin listener, scraped from the internal network by a local collector or checked manually in MVP 1. It is privacy-safe by rule (R13.8).
 - Health: `/healthz` on the public listener is used by Compose healthchecks and an external uptime check.
-- Metrics listed in `design.md`, section 14, plus `duocode_decrypt_failures_total`, `duocode_encryptions_total{key_id}` (warn at 2^27, rotate by 2^28, hard stop at 2^30, approved RD-10), `duocode_games_expired_pending` and rate-limit denials by scope.
+- Metrics listed in `design.md`, section 14, plus `duocode_decrypt_failures_total`, `duocode_encryptions_total{key_id}` (informational invocation count; the thresholds 2^27, 2^28 and 2^30, approved RD-10, are decided from the reserved total and key usage state in section 7, never from this count), `duocode_games_expired_pending` and rate-limit denials by scope.
 - Host metrics (CPU, memory, disk, database size) from the VPS tooling. Hosting cost is tracked manually (baseline 12.4).
 
 ## 10. Environments

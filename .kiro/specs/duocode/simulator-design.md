@@ -56,13 +56,14 @@ Per game number `n`:
 2. Player B joins with the invitation. Record the second token. Check the invitation cannot be reused (an occasional negative check).
 3. Both players submit secret codes, order chosen by the generator. Check the game is `ACTIVE` only after both codes exist, and that responses never contain a code.
 4. Interleave moves until both players are finished. For each move the strategy produces a guess. Send with a fresh `Idempotency-Key`.
-   - With probability `retry-rate`, resend the same request with the same key and body, sometimes in parallel. Expect the identical response with `Idempotent-Replay: true` and no change in guess count.
+   - With probability `retry-rate`, resend the same request with the same key and body, sometimes in parallel. A resend after the first response was received expects the identical response with `Idempotent-Replay: true` and no change in guess count. A parallel pair follows the next bullet.
+   - When the duplicate is sent in parallel, check the pair of responses, not the dispatch order: exactly one of the two carries `Idempotent-Replay: true`, both have the same body, and the guess count changes once. Which of the two requests is the replay is not asserted.
    - Occasionally send the same key with a different body. Expect `409 IDEMPOTENCY_CONFLICT` and no change.
    - With probability `rotate-rate`, rotate the player's token using a fresh version 4 `Idempotency-Key` (**deterministic**, CH-5, R15.5: `key = uuidv4(first 16 bytes of HMAC-SHA-256(simulatorKey, "rotation" || seed || gameNumber || seat || rotationIndex))` with the version nibble set to 4 and the variant bits to `10`, where `simulatorKey` derives from the seed. The same game always produces the same keys, which makes replays exact. Such keys are predictable by design and are for test deployments only. Real clients must generate rotation keys from a cryptographically secure source, R8.13), persist the old token and the key first, and verify the old token then returns `401` for every operation and the new token works.
-   - With probability `lost-rotation-rate`, discard the rotation response and retry with the old token and the same key. Expect the same new token and `Idempotent-Replay: true`. After a replay, verify the old token still fails every other operation (a replay never reactivates it). Also verify that a retry with a different key returns `401`, that a rotation key that is not a version 4 UUID is rejected with `INVALID_IDEMPOTENCY_KEY`, and that a retry after the replay window (test deployments use a short `ROTATION_REPLAY_SECONDS`) returns `401`.
+   - With probability `lost-rotation-rate`, discard the rotation response and retry with the old token and the same key. Expect the same new token and `Idempotent-Replay: true`. A replay is not charged to the `pl:rotate` bucket (RD-18). After a replay, verify the old token still fails every other operation (a replay never reactivates it). Also verify that a retry with a different key returns `401`, that a rotation key that is not a version 4 UUID is rejected with `INVALID_IDEMPOTENCY_KEY`, and that a retry after the replay window (test deployments use a short `ROTATION_REPLAY_SECONDS`) returns `401`.
 5. After each response, fetch status and progress and check consistency.
 6. When both are finished, fetch results. Check outcome, codes and guesses.
-7. Optionally (low probability) request a rematch with capability, and verify new credentials and that old tokens do not work on the new game. Then verify that minting a second capability and creating a second rematch return `REMATCH_ALREADY_CREATED` (one rematch ever, RD-6). The simulator then stops following the rematch.
+7. Optionally (low probability) request a rematch with capability, and verify new credentials and that old tokens do not work on the new game. Then verify the one-rematch-ever rule (RD-6): minting a second capability with the still-valid access token returns `409 REMATCH_ALREADY_CREATED`, and creating a second rematch with the consumed capability returns `401 INVALID_CREDENTIALS`, because the capability is consumed. `REMATCH_ALREADY_CREATED` is returned only when minting. The simulator then stops following the rematch.
 
 ## 5. Strategies (SIM-005)
 
@@ -84,7 +85,7 @@ A game's two players may use different strategies. `mixed` picks per player from
 | Attempt counts | `guessNumber` increments by one per accepted guess. Never above 10. `guessesRemaining` matches |
 | Replay behaviour | Duplicates return the same body, header present, counts unchanged |
 | State transitions | Observed states follow `state-machine.md`: activation only after both codes, completion only when both players finished, no regression |
-| Secrecy | No response before completion contains any code of the game |
+| Secrecy | Scanned by field and ownership: no response before completion contains any secret code of the game, and no response contains the opponent's guesses or feedback. The caller's own guesses, including a winning one, are allowed in progress |
 | Opponent progress | Only counts and flags, matches the opponent's real progress |
 | Outcome | Server outcome equals the outcome recomputed from observed guess counts and solved flags |
 | Status codes | Every status and error code is one the OpenAPI document allows for that operation |
@@ -113,6 +114,6 @@ The report contains no tokens, no secret codes and no nicknames.
 
 ## 9. Use in CI and load
 
-- CI `simulate` job: 200 games, fixed seed, `--strategy mixed --retry-rate 0.1 --rotate-rate 0.02`, concurrency 10, must exit 0.
+- CI `simulate` job: 200 games, fixed seed, `--strategy mixed --retry-rate 0.1 --rotate-rate 0.02 --lost-rotation-rate 0.5 --test-deployment`, concurrency 10, must exit 0. The lost-rotation rate is nonzero so the replay path runs in CI, and the run fails unless at least one lost-response replay was verified for the fixed seed. The same options appear in `.github/workflows/ci.yml`.
 - Scheduled load job: 10,000 games at concurrency 50, records latency percentiles against the 500 ms p95 target, and runs the cleanup endpoint once during the run.
 - Simulator games use short-lived test data in the CI database. Production-like runs target a separate environment.

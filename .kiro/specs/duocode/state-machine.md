@@ -55,8 +55,8 @@ Validation errors (`INVALID_CODE`, `INVALID_GUESS`, `INVALID_NICKNAME`, `INVALID
 For a state-changing request the service applies checks in this order. The first failure decides the response.
 
 1. Request validation (body, path, headers, nickname rules, idempotency key format). A malformed request is rejected here, before anything is read or written.
-2. Preliminary credential lookup by token hash. It is **not authoritative** and grants nothing. It finds the player (for the rate-limit subject) and rejects a token that does not exist at all with `INVALID_CREDENTIALS`. It also feeds `ip:authfail` when it fails.
-3. Rate-limit updates (IP and player buckets), each its own short autocommit transaction. A denial returns `429` and the request goes no further. No lock is held.
+2. Preliminary credential lookup by token hash, after the `ip:authfail` bucket-availability check (an empty bucket returns `429` before any lookup). It is **not authoritative** and grants nothing. It finds the player (for the rate-limit subject) and rejects a token that does not exist at all with `INVALID_CREDENTIALS`, skipping the player buckets and the game transaction. It also rejects a token it already knows to be revoked with `INVALID_CREDENTIALS` before any player bucket is charged (RD-20), except a rotation request (`rotateAccessToken`), which may be a replay and goes on without a player bucket charge. Each such rejection is charged to `ip:authfail`.
+3. Rate-limit updates (IP and player buckets), each its own short autocommit transaction. A denial returns `429` and the request goes no further. No lock is held. A rotation request carrying a revoked token is not charged to `pl:rotate`: if the transaction validates it as a replay it stays exempt (RD-18), otherwise it fails at step 6 or 7.
 4. **Encryption claim, then the pre-encryption check** (only for an operation that may encrypt; CR-23, `design.md` 9.1). Claim the units the operation may need from the instance's allowance, reserving whole blocks first if the allowance is short. Then, as the last step before the transaction, run the pre-encryption check (`database-schema.md` 6.2: the key is not sealed and its registered fingerprint matches the loaded material). If the claim cannot be obtained or the check fails, return the claim and continue with an empty claim. The request is not rejected here, because it may need no encryption (step 10 decides).
 5. Begin transaction. Lock the game row (`design.md` section 8).
 6. Authoritative credential validation (the authorisation point, `design.md` section 5.1): read the reference time, look up the credential, evaluate type, revocation, consumption and expiry in the order of `database-schema.md` section 4. A credential found valid in step 2 but revoked since fails here.
@@ -72,14 +72,14 @@ For operations without a game id in the path (create rematch), step 2 finds the 
 
 A retry of the transaction (`design.md` 8.2) is a fresh attempt: it leaves the transaction and repeats from step 4 with a new claim and a new pre-encryption check.
 
-Operations without a credential (create game, join) skip steps 2 and 6 and use the IP buckets only. Create game and join encrypt nothing, so they also skip steps 4, 10 and 12, and commit at step 13. Join authorises the invitation inside the transaction after the game lock, by the same rules.
+Operations without a credential (create game, join) skip steps 2 and 6 and use the IP buckets only. Create game and join encrypt nothing, so they also skip steps 4, 10 and 12, and commit at step 13. Join authorises the invitation inside the transaction after the game lock, by the same rules, with the invitation-specific lookup mapping (T11): a consumed invitation returns `409 GAME_FULL`, and an unknown invitation, an invitation of another game or of a deleted game returns `404 INVALID_INVITATION`, with identical bodies. The `401 INVALID_CREDENTIALS` mapping applies to access and rematch credentials only.
 
 ### 1.4 Reads (CR-2)
 
 Reads (status, progress, results) do not lock the game row. In this order:
 
 1. Request validation.
-2. Preliminary credential lookup. Non-authoritative. Grants nothing. Rejects tokens that do not exist.
+2. Preliminary credential lookup, after the `ip:authfail` bucket-availability check. Non-authoritative. Grants nothing. Rejects tokens that do not exist and tokens it already knows to be revoked, before any player bucket is charged (RD-20).
 3. Rate-limit updates, each in its own short autocommit transaction.
 4. Begin a read-only `REPEATABLE READ` transaction.
 5. Authoritative credential validation as its **first statement** (the authorisation point). A credential revoked or expired by then fails here with `INVALID_CREDENTIALS` or `GAME_EXPIRED`, regardless of steps 2 and 3.
@@ -88,9 +88,9 @@ Reads (status, progress, results) do not lock the game row. In this order:
 
 Consistency with the revocation model:
 - The preliminary lookup and the rate-limit update never decide validity. Only step 5 does, and it uses the same snapshot as the data.
-- A rate-limit update made on behalf of a token that is revoked a moment later is harmless: the request then fails at step 5.
-- A read that reaches step 4 before a rotation commits is ordered before the rotation and may complete with the old token. A read that reaches step 4 after the commit cannot.
-- A read that began before completion returns the pre-completion view. Results are `GAME_NOT_COMPLETED` for it, even if the game completes a moment later.
+- A rate-limit update made on behalf of a token that is revoked a moment later is harmless: the request then fails at step 5. A token that is already known to be revoked at step 2 is rejected there and charges no player bucket (RD-20).
+- `REPEATABLE READ` takes its snapshot at the transaction's first data statement, which is the authorisation at step 5, not at `BEGIN` (step 4). Both guarantees are relative to that snapshot. A read whose step 5 snapshot is taken before a rotation commits is ordered before the rotation and may complete with the old token. A read whose step 5 snapshot is taken after the commit cannot.
+- A read whose step 5 snapshot is taken before completion returns the pre-completion view. Results are `GAME_NOT_COMPLETED` for it, even if the game completes a moment later.
 - A read never extends `expires_at` (ND-5).
 
 ## 2. Player challenge states
@@ -175,11 +175,11 @@ Evaluation under the game lock, after the expiry check:
 - It returns the original response, the same new token, byte for byte.
 - It does not restore, reactivate or un-revoke the old token. The `credentials` row of P keeps `revoked_at` and reason `ROTATED`. No column of any row changes, `expires_at` is unchanged, and no rotation record is created or extended.
 - The old token has no power outside this table. Presented to any other operation (including a rotation with another key), it receives `401`.
-- Window: `replay_until = reference time of the rotation + ROTATION_REPLAY_SECONDS` (600 by default, RD-3). After it, the replay row is ignored even if the ciphertext still exists. Cleanup clears the ciphertext.
+- Window: `replay_until = reference time of the rotation + ROTATION_REPLAY_SECONDS` (600 by default, RD-3). From that instant the API refuses the replay (`401`), even if the ciphertext still exists. The ciphertext is removed later, by the next cleanup run that reaches the game (eventual removal, not at the deadline).
 
 **Consequences of losing the replacement token.**
 - Inside the window: retry with the old token and the same key. The same new token comes back.
-- After the window: the replacement token is lost for good. The old token is revoked and cannot be used. The server has deleted its stored copy. There is no recovery path for anyone, including the operator. The player loses the seat. The opponent and the game are unaffected, and the game expires at its retention end.
+- After the window: the replacement token is lost for good. The old token is revoked and cannot be used. The API refuses the replay from the deadline and cleanup removes the stored copy soon after. There is no recovery path for anyone, including the operator. The player loses the seat. The opponent and the game are unaffected, and the game expires at its retention end.
 - Clients must persist the old token and the key before sending, persist the new token as soon as it arrives, and retry promptly with backoff.
 
 Cases covered:
