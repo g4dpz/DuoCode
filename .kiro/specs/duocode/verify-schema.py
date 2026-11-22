@@ -10,6 +10,8 @@
 # --server-bin must contain initdb, pg_ctl and postgres of the version under test.
 # Exit code 0 only when every test passed.
 import argparse, json, os, random, re, shutil, subprocess, sys, tempfile, time
+if not __debug__:                                  # E1: assert statements are the checks, so python -O would pass vacuously
+    sys.exit("verify-schema.py must not run with python -O: its assertions would be skipped")
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -57,7 +59,9 @@ def start():
 
 
 def stop():
-    run([str(SB / "pg_ctl"), "-D", str(data), "-m", "fast", "-w", "stop"])
+    r = run([str(SB / "pg_ctl"), "-D", str(data), "-m", "fast", "-w", "stop"])
+    if r.returncode != 0:                           # E2: never copy or remove the data directory of a server that may still run
+        raise RuntimeError("pg_ctl stop failed: " + (r.stderr + r.stdout).strip()[:300])
 
 
 def ddl():
@@ -209,6 +213,32 @@ try:
         sql(ins(61, u(70)), expect_error="token_rotations")
         sql(ins(62, u(71)), expect_error="token_rotations")
 
+    @test("idempotency row can only reference a guess of its own player (C1)")
+    def _():
+        reset_data(); new_game(1); new_game(2); new_player(11, 1, 1); new_player(12, 1, 2); new_player(21, 2, 1)
+        for pid in (11, 12, 21):
+            sql(f"INSERT INTO guesses(player_id,guess_number,key_id,guess_ciphertext,exact,misplaced) VALUES ('{u(pid)}',1,1,decode(repeat('01',32),'hex'),0,0);")
+        gid = lambda pid: sql(f"SELECT id FROM guesses WHERE player_id='{u(pid)}';")
+        ins = lambda pid, g, k: f"INSERT INTO idempotency_keys(player_id,key,guess_id,fingerprint,fingerprint_key_id,response_status,response_body) VALUES ('{u(pid)}','{k}',{g},decode(repeat('00',32),'hex'),1,201,'{{}}');"
+        sql(ins(11, gid(12), u(100)), expect_error="idempotency_keys_guess_id_player_id_fkey")   # other player, same game
+        sql(ins(11, gid(21), u(101)), expect_error="idempotency_keys_guess_id_player_id_fkey")   # other player, other game
+        sql(ins(11, gid(11), u(102)))                                                            # own guess
+    @test("rotation record binds both credentials to its player and game and to type ACCESS (C2)")
+    def _():
+        reset_data(); new_game(1); new_game(2); new_player(11, 1, 1); new_player(12, 1, 2); new_player(21, 2, 1)
+        h = lambda x: f"decode(repeat('{x}',32),'hex')"
+        cred = lambda i, typ, g, p, hx, rev="NULL,NULL": f"INSERT INTO credentials(id,type,game_id,player_id,token_hash,revoked_at,revoked_reason) VALUES ('{u(i)}','{typ}','{u(g)}',{'NULL' if p is None else repr(u(p))},{h(hx)},{rev});"
+        sql(cred(50, "ACCESS", 1, 11, "01", "now(),'ROTATED'") + cred(51, "ACCESS", 1, 11, "02") + cred(52, "ACCESS", 1, 12, "03") + cred(53, "ACCESS", 2, 21, "04")
+            + cred(54, "INVITATION", 1, None, "05") + cred(55, "REMATCH", 1, 11, "06"))
+        ins = lambda i, k, frm, to, g=1, p=11, extra="": f"INSERT INTO token_rotations(id,game_id,player_id,idempotency_key,from_credential_id,to_credential_id{extra[0] if extra else ''},fingerprint,replay_until) VALUES ('{u(i)}','{u(g)}','{u(p)}','{u(k)}','{u(frm)}','{u(to)}'{extra[1] if extra else ''},{h('07')},now()+interval '10 minutes');"
+        sql(ins(60, 70, 52, 51), expect_error="token_rotations_from_credential")     # old credential of another player
+        sql(ins(61, 71, 50, 52), expect_error="token_rotations_to_credential")       # new credential of another player
+        sql(ins(62, 72, 50, 53), expect_error="token_rotations_to_credential")       # new credential of another game
+        sql(ins(63, 73, 54, 51), expect_error="token_rotations_from_credential")     # invitation credential
+        sql(ins(64, 74, 50, 55), expect_error="token_rotations_to_credential")       # rematch credential
+        sql(ins(65, 75, 55, 51), expect_error="token_rotations_from_credential")     # rematch credential as old
+        sql(ins(66, 76, 50, 55, extra=(",to_type", ",'REMATCH'")), expect_error="to_type_check")   # the type column cannot be set to another type
+        sql(ins(67, 77, 50, 51))                                                      # valid ACCESS pair of the same player and game
     @test("game result at most once; completed state needs completion time")
     def _():
         reset_data()
@@ -250,7 +280,17 @@ try:
     @test("maintenance statements (rotation ciphertext clearing, idle rate-limit rows) run")
     def _():
         reset_data()
-        sql("UPDATE token_rotations SET token_ciphertext = NULL, token_key_id = NULL WHERE token_ciphertext IS NOT NULL AND replay_until <= clock_timestamp();")
+        replay_block = next(b for b in blocks if "WITH batch AS" in b)
+        replay_stmt = replay_block.split("-- Maintenance", 1)[1].split("\n", 1)[1].split("DELETE FROM rate_limits", 1)[0].replace("$1", "200")   # the statement of database-schema.md section 7 (C6)
+        new_game(1); new_player(11, 1, 1)
+        h = lambda x: f"decode(repeat('{x}',32),'hex')"
+        sql(f"INSERT INTO credentials(id,type,game_id,player_id,token_hash,revoked_at,revoked_reason) VALUES ('{u(50)}','ACCESS','{u(1)}','{u(11)}',{h('01')},now(),'ROTATED'),('{u(51)}','ACCESS','{u(1)}','{u(11)}',{h('02')},now(),'ROTATED'),('{u(52)}','ACCESS','{u(1)}','{u(11)}',{h('03')},NULL,NULL);")
+        ct = "decode(repeat('aa',75),'hex')"
+        sql(f"INSERT INTO token_rotations(id,game_id,player_id,idempotency_key,from_credential_id,to_credential_id,fingerprint,token_key_id,token_ciphertext,replay_until) VALUES "
+            f"('{u(60)}','{u(1)}','{u(11)}','{u(70)}','{u(50)}','{u(51)}',{h('07')},1,{ct},now()-interval '1 minute'),"
+            f"('{u(61)}','{u(1)}','{u(11)}','{u(71)}','{u(51)}','{u(52)}',{h('08')},1,{ct},now()+interval '10 minutes');")
+        sql(replay_stmt)
+        assert sql("SELECT id||':'||(token_ciphertext IS NULL)||':'||coalesce(token_key_id::text,'null') FROM token_rotations ORDER BY id;").split("\n") == [f"{u(60)}:true:null", f"{u(61)}:false:1"]   # only the expired copy is cleared
         sql(RL.format(cap=3, refill=0)); sql("UPDATE rate_limits SET refilled_at = now() - interval '2 hours';")
         sql("DELETE FROM rate_limits WHERE ctid IN (SELECT ctid FROM rate_limits WHERE refilled_at < clock_timestamp() - interval '1 hour' FOR UPDATE SKIP LOCKED);")
         assert sql("SELECT count(*) FROM rate_limits;") == "0"
@@ -413,6 +453,8 @@ try:
         try:
             a.stdin.write(cmds + "\n\\q\n"); a.stdin.flush()
             out, err = a.communicate(timeout=30)
+            if a.returncode != 0:                 # E3: a failed psql session is a failed test
+                raise AssertionError(f"psql session failed ({a.returncode}): {err.strip()[:300]}")
             return out.strip()
         except Exception:
             a.kill()                          # terminate and reap a stalled session so its locks are released (CR-15)
@@ -1088,19 +1130,21 @@ try:
         finally:
             sql("REVOKE ALL ON ring_state FROM t_km, t_app, t_kv; DROP ROLE t_km; DROP ROLE t_app; DROP ROLE t_kv;")
 
-    @test("reconciliation privileges: keymgmt's column grants (secret_codes.key_id, guesses.key_id, token_rotations.token_key_id) are valid and allow the pre-check but no ciphertext (CR-20)")
+    @test("reconciliation privileges: keymgmt's column grants (secret_codes.key_id, guesses.key_id, token_rotations.token_key_id, idempotency_keys.fingerprint_key_id) are valid and allow the pre-check but no ciphertext (CR-20)")
     def _():
         sql("DROP ROLE IF EXISTS t_km2; CREATE ROLE t_km2;")
-        grants = re.search(r"`SELECT \(key_id\)` on `secret_codes` and `guesses` and `SELECT \(token_key_id\)` on `token_rotations`", open(HERE / "deployment.md").read())
+        grants = re.search(r"`SELECT \(key_id\)` on `secret_codes` and `guesses` and `SELECT \(token_key_id\)` on `token_rotations` and `SELECT \(fingerprint_key_id\)` on `idempotency_keys`", open(HERE / "deployment.md").read())
         assert grants, "deployment.md does not state the column grants"
         try:
-            sql("GRANT SELECT (key_id) ON secret_codes TO t_km2; GRANT SELECT (key_id) ON guesses TO t_km2; GRANT SELECT (token_key_id) ON token_rotations TO t_km2;")
+            sql("GRANT SELECT (key_id) ON secret_codes TO t_km2; GRANT SELECT (key_id) ON guesses TO t_km2; GRANT SELECT (token_key_id) ON token_rotations TO t_km2; GRANT SELECT (fingerprint_key_id) ON idempotency_keys TO t_km2;")
             sql("SET ROLE t_km2; SELECT DISTINCT key_id FROM secret_codes UNION SELECT DISTINCT key_id FROM guesses UNION SELECT DISTINCT token_key_id FROM token_rotations WHERE token_key_id IS NOT NULL;")
+            sql("SET ROLE t_km2; SELECT DISTINCT fingerprint_key_id FROM idempotency_keys;")
+            sql("SET ROLE t_km2; SELECT fingerprint FROM idempotency_keys;", expect_error="permission denied")
             sql("SET ROLE t_km2; SELECT ciphertext FROM secret_codes;", expect_error="permission denied")
             sql("SET ROLE t_km2; SELECT guess_ciphertext FROM guesses;", expect_error="permission denied")
             sql("SET ROLE t_km2; SELECT token_ciphertext FROM token_rotations;", expect_error="permission denied")
         finally:
-            sql("REVOKE ALL ON secret_codes, guesses, token_rotations FROM t_km2; DROP ROLE t_km2;")
+            sql("REVOKE ALL ON secret_codes, guesses, token_rotations, idempotency_keys FROM t_km2; DROP ROLE t_km2;")
 
     @test("gate reconciliation after restore: stale retired and abandoned requirements are replaced by the newest ring's keys; refused while a reader is live (CR-19)")
     def _():

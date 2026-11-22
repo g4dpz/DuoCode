@@ -189,7 +189,19 @@ signed=re.findall(r'^- \[x\] (1\.[1-6]) ',tk,re.M)
 check(f'C15 only Phase 1 gates are marked done, each with a recorded owner sign-off (signed: {", ".join(signed) or "none"})',pr)
 # 16 baseline constants
 pr=[]
-if 'maxItems: 4' not in files['openapi.yaml']: pr.append('code length not constrained')
+def oa_resolve(node):
+    seen=0
+    while isinstance(node,dict) and '$ref' in node and seen<10:
+        cur=oa
+        for part in node['$ref'].lstrip('#/').split('/'): cur=cur[part]
+        node=cur; seen+=1
+    return node
+if 'Code' not in oa['components']['schemas']: pr.append('schema Code is missing')
+else:
+    cs=oa_resolve({'$ref':'#/components/schemas/Code'})
+    if cs.get('type')!='array' or cs.get('minItems')!=4 or cs.get('maxItems')!=4: pr.append('Code is not an array of exactly 4 items')
+    it=oa_resolve(cs.get('items',{}))
+    if it.get('type')!='integer' or it.get('minimum')!=1 or it.get('maximum')!=6: pr.append('Code items are not integers from 1 to 6')
 check('C16 OpenAPI constrains codes to 4 symbols from 1..6',pr)
 # 17 openapi nickname regex vs db regex
 oan=oa['components']['schemas']['Nickname']['pattern']
@@ -225,9 +237,10 @@ for fn in spec:
 check('C20 no decision recorded as approved in the register is still described as pending elsewhere',pr)
 # 21 no application code, migrations or implementation tasks
 import subprocess
-tracked=subprocess.run(['git','-C',root,'ls-files','-co','--exclude-standard'],capture_output=True,text=True).stdout.split()
+lsf=subprocess.run(['git','-C',root,'ls-files','-co','--exclude-standard'],capture_output=True,text=True)
+tracked=lsf.stdout.split()
 allowed_ext={'.md','.yaml','.yml','.py'}
-pr=[]
+pr=[f'git ls-files failed (exit {lsf.returncode}): {lsf.stderr.strip()[:100]}'] if lsf.returncode!=0 else []
 for f in tracked:
     base=os.path.basename(f); ext=os.path.splitext(f)[1]
     top=f.split('/')[0]
@@ -432,6 +445,68 @@ for p in sorted(have-want): pr.append(f'README layout has {p}, which design.md s
 for stale in ('awaiting owner approval','Caddy or Nginx','subject to owner approval'):
     if stale in rd: pr.append(f'README still says "{stale}"')
 check(f'C30 the README layout lists exactly the approved design.md layout as full paths ({len(want)} paths) and carries no superseded approval statements',pr)
+# 31 invitation error table agrees across documents (task 1.8, A3, B14, C8)
+pr=[]
+for fn in ('requirements.md','security-assessment.md','state-machine.md','copilot-instructions.md','openapi.yaml'):
+    for tok in ('GAME_FULL','INVALID_INVITATION'):
+        if tok not in files[fn]: pr.append(f'{fn} does not mention {tok}')
+for fn in ('requirements.md','security-assessment.md','state-machine.md','copilot-instructions.md'):
+    for i,l in enumerate(files[fn].splitlines(),1):
+        if '401 INVALID_CREDENTIALS' in l and re.search(r'invitation',l,re.I) and not re.search(r'GAME_FULL|INVALID_INVITATION|access and rematch|exception',l):
+            pr.append(f'{fn}:{i}: a 401 rule mentions invitations without the join exceptions')
+jr=oa['paths']['/games/{gameId}/join']['post']['responses']
+if '401' in jr: pr.append('joinGame declares 401')
+for c in ('404','409'):
+    if c not in jr: pr.append(f'joinGame lacks {c}')
+check('C31 the join error exceptions (409 GAME_FULL, 404 INVALID_INVITATION, no blanket 401) agree in requirements, security assessment, state machine, copilot instructions and OpenAPI',pr)
+# 32 HKDF labels agree (task 1.8, B13)
+pr=[]
+labels=set()
+for fn,t in files.items():
+    for l in t.splitlines():
+        if 'HKDF' in l: labels|=set(re.findall(r'duocode/[a-z]+/v\d+',l))   # the other duocode/<name>/v1 strings are AAD domain labels
+if labels!={'duocode/enc/v1','duocode/mac/v1'}: pr.append(f'HKDF labels in use: {sorted(labels)}')
+m1=re.search(r'Guess fingerprint: `HMAC-SHA-256\(HKDF\(key\[kid\], "([^"]+)"\)',files['design.md'])
+m2=re.search(r'`(duocode/[a-z]+/v\d+)` for HMAC fingerprints',files['security-assessment.md'])
+if not m1 or m1.group(1)!='duocode/mac/v1': pr.append('design.md guess fingerprint does not use duocode/mac/v1')
+if not m2 or m2.group(1)!='duocode/mac/v1': pr.append('security-assessment.md fingerprint key does not use duocode/mac/v1')
+check('C32 the HKDF labels (lines that mention HKDF) are duocode/enc/v1 and duocode/mac/v1 only, and the guess fingerprint uses duocode/mac/v1 in design.md and security-assessment.md',pr)
+# 33 every operation with a gameId path parameter declares 400 (task 1.8, C9)
+pr=[]
+for path,item in oa['paths'].items():
+    if '{gameId}' not in path: continue
+    for meth,op in item.items():
+        if meth in ('get','post','put','delete','patch') and '400' not in op.get('responses',{}): pr.append(f"{op['operationId']} lacks 400")
+check('C33 every OpenAPI operation with a gameId path parameter declares 400',pr)
+# 34 CI secret hygiene covers .env.* and exempts only .env.example (task 1.8, B1)
+pr=[]
+hy=[st.get('run','') for j in yaml.safe_load(open(root+'.github/workflows/ci.yml'))['jobs'].values() for st in j.get('steps',[]) if 'git ls-files' in st.get('run','') and 'secrets/' in st.get('run','')]
+hm=re.search(r"grep -E '([^']+)'.*grep -vE '([^']+)'",hy[0]) if hy else None
+if not hm: pr.append('the secret-file step of ci.yml was not found')
+else:
+    flag=lambda n: re.search(hm.group(1),n) and not re.search(hm.group(2),n)
+    for n in ('.env','.env.local','.env.production','app/.env.staging','secrets/key.txt','a.pem','.env.example.bak'):
+        if not flag(n): pr.append(f'{n} is not flagged')
+    if flag('.env.example') or flag('docs/.env.example'): pr.append('.env.example is not exempt')
+check('C34 the CI repository hygiene step flags .env, .env.* and secret files and exempts only .env.example',pr)
+# 35 required merge checks include audit and exist as CI jobs (task 1.8, D13)
+pr=[]
+mm=re.search(r'Merge requires (.*?) to pass',files['test-strategy.md'])
+req_jobs=re.findall(r'`([\w-]+)`',mm.group(1)) if mm else []
+if 'audit' not in req_jobs: pr.append('test-strategy.md required merge checks omit audit')
+cij=yaml.safe_load(open(root+'.github/workflows/ci.yml'))['jobs']
+if 'audit' not in cij: pr.append('ci.yml has no audit job')
+check('C35 the required merge checks in test-strategy.md include audit and ci.yml defines the audit job',pr)
+# 36 pl:rotate replays are exempt everywhere, and R20.3 scopes token buckets to the application layer (task 1.8, RD-16, RD-18)
+pr=[]
+for fn in spec:
+    if fn=='revision-3.1-review-package.md': continue
+    for i,l in enumerate(files[fn].splitlines(),1):
+        if 'pl:rotate' in l and re.search(r'replay',l,re.I) and not re.search(r'exempt|not charged|never charged|uncharged',l,re.I):
+            pr.append(f'{fn}:{i}: pl:rotate and replay without the exemption')
+r203=re.search(r'^3\. (EACH application-layer limit.*)$',req[req.index('### R20:'):],re.M)
+if not r203 or 'sliding-window' not in r203.group(1) or 'not token buckets' not in r203.group(1): pr.append('R20.3 does not scope token buckets to the application layer')
+check('C36 validated pl:rotate replays are described as exempt wherever they are mentioned, and R20.3 limits token buckets to the application layer',pr)
 # 22 OpenAPI lint
 import shutil as _sh
 if _sh.which('npx'):
