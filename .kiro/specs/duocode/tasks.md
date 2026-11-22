@@ -8,7 +8,7 @@ Follows `requirements.md` (R#, decision IDs), `traceability.md` and the specific
 
 Specification artefacts are drafted. These tasks are the owner's approvals. To sign off a gate, mark it `[x]` and append the date and approver. A gate is signed off only by an explicit owner statement. One owner's statement is enough (RD-15).
 
-Revision 3.1 review package: `revision-3.1-review-package.md` (change summary from revision 3, verification results, remaining decisions). All six gates are signed off. Task 1.9 is not.
+Revision 3.1 review package: `revision-3.1-review-package.md` (change summary from revision 3, verification results, remaining decisions). All six gates are signed off. Gate 2 is reopened only for the last sentence of `design.md` section 16 (Gate 6 status wording), awaiting owner confirmation (see `tasks.md` 1.2). Task 1.9 is not, and needs its own explicit owner statement.
 
 - [x] 1.1 **Gate 1: Owner approval of the revised requirements.** Review `requirements.md` revision 3.1 and `traceability.md`. All technical decisions (OD, ND, C, CL, CR-1 to CR-21, RD-1 to RD-14, CH-1 to CH-6) are recorded as approved. Confirm the approval status of every requirement R1 to R21. (All requirements)
   - **Signed off 2026-11-22 by David Johnson (G4DPZ), owner statement "Approve Gate 1".** Approved as at `main` commit `53c46df`. Covers R1 to R21, including the baseline-derived criteria marked B in `traceability.md` (R14, R16, and the B parts of R15 and R18). **R19 is approved except its licensing text, which stays pending Gate 6** (LI-1 to LI-4). Any later change to `requirements.md` reopens Gate 1 for the changed requirement.

@@ -175,6 +175,11 @@ for idx,l in enumerate(lines):
         if not m: pr.append('marked done but not a Phase 1 gate: '+l[:60])
         elif not re.search(r'Signed off \d{4}-\d{2}-\d{2} by .+owner statement "[^"]*\S[^"]*"',nxt): pr.append(f'gate {m.group(1)} marked done without a recorded owner sign-off')
 if re.search(r'^- \[x\] 1\.9',tk,re.M) and len(re.findall(r'^- \[x\] 1\.[1-6] ',tk,re.M))<6: pr.append('1.9 marked done before all six gates')
+awaiting=re.findall(r'^  - \*\*Reopened [^\n]*Awaiting an explicit owner confirmation',tk,re.M)
+if awaiting:
+    if re.search(r'^- \[x\] 1\.9',tk,re.M): pr.append('1.9 marked done while a reopened gate part awaits confirmation')
+    for fn in ('requirements.md','traceability.md','tasks.md','revision-3.1-review-package.md'):
+        if 'awaiting owner confirmation' not in files[fn]: pr.append(f'{fn} status does not mention the reopened gate part awaiting confirmation')
 signed=re.findall(r'^- \[x\] (1\.[1-6]) ',tk,re.M)
 check(f'C15 only Phase 1 gates are marked done, each with a recorded owner sign-off (signed: {", ".join(signed) or "none"})',pr)
 # 16 baseline constants

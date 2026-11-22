@@ -14,7 +14,7 @@ The **Status** column records **decision provenance**: where the requirement cam
 | **A+RD** | As A, but part of the requirement still depends on an input from the owners (none remain: the Gate 6 inputs LI-1 to LI-4 were given on 2026-11-22, with LI-3 recorded as an outstanding legal item) |
 | **B** | Taken from the baseline requirements without a separate owner decision. It was approved explicitly as part of Gate 1 |
 
-Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and state machine, 1.5 security assessment, 1.6 licensing and contributor arrangements. Current state: **Gates 1.1 to 1.5 signed off on 2026-11-22** (R19 licensing text pending 1.6; 1.2 with the key command-list wording in `deployment.md` 2.1 and 6.3 and `design.md` section 3 re-confirmed the same day (see `tasks.md` 1.2)). Gate 1.6 **not signed off**. A requirement is fully approved only when every gate listed in its row is signed off.
+Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and state machine, 1.5 security assessment, 1.6 licensing and contributor arrangements. Current state: **Gates 1.1 to 1.6 signed off on 2026-11-22** (R19 licensing text approved at 1.6, legal review LI-3 outstanding; 1.2 with the key command-list wording in `deployment.md` 2.1 and 6.3 and `design.md` section 3 re-confirmed the same day). Gate 2 is reopened only for the last sentence of `design.md` section 16 (Gate 6 status wording), awaiting owner confirmation (see `tasks.md` 1.2). A requirement is fully approved only when every gate listed in its row is signed off.
 
 ## 2. Matrix
 
