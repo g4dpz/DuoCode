@@ -1,4 +1,4 @@
-# DuoCode Security Assessment (revision 3.1, final for gate review)
+# DuoCode Security Assessment (revision 3.1, final for gate review, strict hard-stop correction)
 
 Owns: threats and mitigations, credential security, rotation implications, encryption and key management, logging and metrics rules, residual risks. Related: `requirements.md` (R3, R5, R8, R10, R13, R20, R21), `design.md` (credential model, authorisation point, vault, lock ordering), `database-schema.md` (storage), `state-machine.md` (credential lifecycle, idempotent rotation), `../../../openapi/openapi.yaml` (error behaviour), `deployment.md` (secrets, proxy, backups, restore).
 
@@ -115,7 +115,9 @@ Implementation implications:
 - **Nonces.** 96 bits from `crypto.getRandomValues`, fresh for every encryption, including every re-encryption. Uniqueness is probabilistic, so it needs a per-key budget (RD-10, section 3.3a).
 - **Never deterministic.** Two encryptions of the same plaintext always differ.
 
-### 3.3a Nonce budget, rotation thresholds and the usage counter (RD-10 and RD-13, approved)
+### 3.3a Nonce budget, rotation thresholds and the usage counter (RD-10, RD-13, CR-9)
+
+**Terms.** A *reserved unit* is one permitted encryption, counted in the key's total `R`. An *encryption invocation* is one actual encryption and consumes one reserved unit. An *allowance* is the reserved units an instance holds unconsumed, and is part of `R`. The thresholds below apply to `R`. Because `R >= invocations` always, a limit on `R` is a limit on invocations.
 
 Facts: random 96-bit nonces with AES-GCM. The probability that any two of `n` encryptions under one key share a nonce is about `n² / 2^97`. NIST SP 800-38D allows at most `2^32` invocations per key with random nonces, which bounds that probability at `2^-32`.
 
@@ -131,24 +133,35 @@ Rationale:
 - Re-encryption counts too: every row it rewrites is a new encryption under the new key.
 - The three points give time to react: the warning prompts planning, the rotation point makes rotation mandatory, and the hard stop makes the application fail closed before the limit rather than silently exceed it.
 
-**Mechanism (RD-13, approved with conditions): durable reservations.** The counter does not count encryptions after the fact. It counts *reservations* made before use, so it cannot be rolled back with the application transaction and cannot under-count.
+**Mechanism (RD-13 and CR-9): durable reservations against one authoritative counter, with a strict hard stop.** The full specification is `database-schema.md` section 6.2. In brief:
 
-1. Before an operation that may encrypt, the instance makes sure its in-memory allowance for the active key covers the operation's worst case. This happens before the request transaction begins.
-2. If it does not, the instance reserves a block (default 1024) in its own short autocommit transaction on a separate connection (`database-schema.md` section 6.2). Only after that transaction commits is the block added to the allowance.
-3. Each encryption invocation consumes one unit of the allowance at the moment it happens, whatever happens to the surrounding transaction afterwards.
-4. If the reservation fails, nothing is encrypted and the request fails closed with `503`.
+1. One row per key holds `R`. A single atomic statement grants a positive whole number of blocks only if `R + units <= hard stop`: `UPDATE key_usage SET reserved = reserved + units WHERE key_id = k AND NOT sealed AND units > 0 AND reserved + units <= hard_stop RETURNING reserved`. No row returned means refused, with no change. A zero or negative request matches no row, so the counter can never go down, and an operation that needs many units gets as many whole blocks as it needs in one statement.
+2. The statement runs in its own autocommit transaction on a separate connection, before the request transaction. A reservation is therefore never rolled back with an application transaction.
+3. An instance adds the units to its in-memory allowance only after the statement returns. Before an operation's transaction it atomically **claims** the units it may need from the allowance, and returns what it did not use. Each encryption invocation consumes one claimed unit, and the vault refuses to encrypt with none. If no units can be obtained, the operation is not rejected at once: it still answers replays, conflicts and rule rejections normally, and ends with `503` only where a fresh encryption is needed, before anything is written (a rotation replay needs no encryption, so a lost rotation response is never turned into a lockout by an exhausted key).
+4. A database `CHECK (reserved <= 2^30)` is an absolute backstop independent of application configuration.
 
-Why this meets the conditions:
+**Why the hard stop is strict, and why the 32 shards were replaced.** With shards, each reservation updated one shard row, and the total across shards was read separately. Two instances working on different shards could both see room below the limit and both reserve, and instances already holding allowances kept encrypting after another instance saw the limit exceeded. The draft therefore only approximated the limit, up to one block per instance. The single row removes the race: PostgreSQL's row lock serialises every reservation under the key, and a waiting update re-evaluates its `WHERE` clause against the latest committed `R` before changing anything, so two instances cannot both be granted the last block. Allowances are inside `R` by construction, because a unit enters an allowance only after it was added to `R`. So the number of invocations is at most the number of units ever reserved, which is at most 2^30. Contention is one statement per 1024 encryptions per instance on one row, which is not significant at DuoCode's expected volume. Correctness was chosen over parallelism.
+
+**Guarantees:**
 - *Cannot be rolled back with the application transaction:* the reservation is committed independently, earlier.
-- *Account for every invocation, including failed or rolled-back transactions:* invocations consume reserved units regardless of the transaction outcome.
-- *No underestimate:* an encryption needs a unit, a unit needs a committed reservation, so `sum(reserved) >= encryptions performed`. Crashes and unused allowance only make the counter higher.
-- *Multiple instances:* each reserves its own blocks with atomic increments. Overshoot of a threshold is at most one block per instance.
+- *Accounts for every invocation, including failed or rolled-back transactions:* invocations consume reserved units regardless of the transaction outcome.
+- *No underestimate:* an encryption needs a unit, a unit needs a committed reservation, so `R >= invocations`. Crashes, restarts and unknown outcomes only add unused units, so the counter may overestimate. That is acceptable and safe.
+- *Strict global limit:* `R <= 2^30` always (statement guard plus `CHECK`), with several instances, concurrent reservations, and instances holding outstanding allowances.
+- *No encryption without a unit:* an exhausted allowance stops encryption until a reservation is granted, and at the hard stop none is.
 
-**Limit of the mechanism, and the restore rule (RD-13).** The invariant holds for the live database. If the database is restored from an earlier backup, the `key_usage` rows go back in time too, and the counter may be lower than the encryptions really performed under the key after the backup. Ciphertexts from that period may survive elsewhere (the lost database, older backups, copies held by an attacker), so the nonce budget cannot be assumed unspent. The restore procedure therefore always generates a new key and makes it the only `ACTIVE` key before traffic is accepted, unless the restore is proved lossless (pre-restore counters not above restored counters). The previous key becomes `DECRYPT_ONLY`, stays in the ring so existing data decrypts, and never becomes `ACTIVE` again. The ring file lives outside the database and is not rolled back by a restore, so it keeps the new key and the old key's `DECRYPT_ONLY` status (`deployment.md` section 6.1).
+**Threshold behaviour** (exact):
+
+| Threshold | Behaviour |
+|---|---|
+| 2^27 reserved units | Warning metric, one operational warning per key per process start, admin health state `warning`. Reservations continue. The public `/healthz` is not affected |
+| 2^28 reserved units | The key is `ROTATION_OVERDUE`: critical alert, admin health state `degraded` (the public `/healthz` stays `ok`). Rotation is mandatory. **Reservations under the key continue to be granted until the hard stop** (RD-14, approved), so a late rotation is not an outage. Rotating makes the old key `DECRYPT_ONLY` and seals it, after which no reservation under it is granted |
+| 2^30 reserved units | Hard stop. A block that would take `R` above 2^30 is refused, so `R` never exceeds 2^30. `R` can equal 2^30 exactly. No further encryption occurs under the key once instances have consumed the units they already hold. Encrypting operations fail closed with `503`. Decryption is unaffected |
+
+**Limit of the mechanism, and the restore rule (RD-13).** The invariant holds for the live database. If the database is restored from an earlier backup, the `key_usage` row goes back in time too, and `R` may be lower than the encryptions really performed under the key after the backup. Ciphertexts from that period may survive elsewhere (the lost database, older backups, copies held by an attacker), so the nonce budget cannot be assumed unspent. The restore procedure therefore always: generates a new key and makes it the only `ACTIVE` key; **seals every older key** (sets its counter to 2^30, so any reservation under it is refused even if the ring were mistaken); and restarts all instances so every in-memory allowance is discarded. This happens before traffic is accepted, unless the restore is proved lossless (pre-restore counters not above restored counters). The previous key becomes `DECRYPT_ONLY`, stays in the ring so existing data decrypts, and never becomes `ACTIVE` again. The ring file lives outside the database and is not rolled back by a restore, so it keeps the new key and the old key's `DECRYPT_ONLY` status (`deployment.md` section 6.1).
 
 A further guard: `keys:verify` checks that the number of ciphertext rows under each key does not exceed its reserved total. A violation is evidence of a rolled-back or corrupted counter and fails verification.
 
-Configuration: `KEY_USAGE_WARN`, `KEY_USAGE_ROTATE_BY`, `KEY_USAGE_HARD_STOP`, `KEY_USAGE_BLOCK` (`design.md` section 13).
+Configuration: `KEY_USAGE_WARN`, `KEY_USAGE_ROTATE_BY`, `KEY_USAGE_HARD_STOP` (at most 2^30, a multiple of the block), `KEY_USAGE_BLOCK` (`design.md` section 13).
 
 ### 3.4 Authenticated additional data (AAD)
 
@@ -185,19 +198,22 @@ Prohibited without exception: decrypted values in logs, diagnostics, metrics, tr
 **Key ring.** A JSON file mounted as a Docker secret, readable only by the application user:
 
 ```json
-{ "version": 1, "generation": 7, "active": 2,
+{ "version": 1, "generation": 7, "highestKeyId": 3, "active": 2,
+  "fingerprintHistory": { "1": { "fp": "<hex sha-256>", "state": "REGISTERED" }, "2": { "fp": "<hex sha-256>", "state": "REGISTERED" }, "3": { "fp": "<hex sha-256>", "state": "REGISTERED" } },
   "keys": {
-    "1": { "key": "<base64 32 bytes>", "status": "DECRYPT_ONLY", "createdAt": "2026-11-21T00:00:00Z", "deactivatedAt": "2027-06-01T00:00:00Z" },
-    "2": { "key": "<base64 32 bytes>", "status": "ACTIVE",       "createdAt": "2027-06-01T00:00:00Z" } } }
+    "1": { "key": "<base64 32 bytes>", "selfTest": "<base64 known-answer ciphertext>", "status": "DECRYPT_ONLY", "createdAt": "2026-11-21T00:00:00Z", "deactivatedAt": "2027-06-01T00:00:00Z" },
+    "2": { "key": "<base64 32 bytes>", "selfTest": "<base64 known-answer ciphertext>", "status": "ACTIVE", "createdAt": "2027-06-01T00:00:00Z" },
+    "3": { "key": "<base64 32 bytes>", "selfTest": "<base64 known-answer ciphertext>", "status": "STAGED", "createdAt": "2028-01-10T00:00:00Z" } } }
 ```
 
-- Exactly one key is `ACTIVE`. Older keys needed for existing ciphertext or restorable backups are `DECRYPT_ONLY`. A key that has been `DECRYPT_ONLY` never becomes `ACTIVE` again: when a key stops being active its `deactivatedAt` is set, and the application refuses to start if a key with `deactivatedAt` set is marked `ACTIVE`. `generation` increases with every change to the ring, so the newest copy can be identified.
+- Exactly one key is `ACTIVE`. A `STAGED` key is loaded and can decrypt but is never used to encrypt: it exists so that a new key can be on every instance before any instance writes with it (section 3.6, rotation). Older keys needed for existing ciphertext or restorable backups are `DECRYPT_ONLY`. A key that has been `DECRYPT_ONLY` never becomes `ACTIVE` again: when a key stops being active its `deactivatedAt` is set, and the application refuses to start if a key with `deactivatedAt` set is marked `ACTIVE`. `generation` increases with every change to the ring, so the newest copy can be identified.
 - The file lives outside the PostgreSQL container and the database volume. Database backups never include it.
 - The path comes from `CODE_KEYRING_FILE`. Key material is never placed in environment variables, migrations, images, logs or the repository. `.gitignore` excludes `secrets/`.
-- At start-up the application loads the ring, validates each key is 32 bytes and statuses are consistent, encrypts and decrypts a self-test value with the active key, and refuses to start on any failure. `/healthz` reports not ready without a loaded ring.
+- **Key material and identifiers are never reused, even after retirement.** At load, each entry's material must match the fingerprint recorded in `fingerprintHistory` for its identifier, and before encrypting it must match `key_usage.fingerprint` (pre-encryption check and reservation statement), so a retired key cannot be pasted into an active entry to use that entry's counter (CR-14). The loader and `keys:generate` reject a ring in which two identifiers carry the same 32 bytes of key material (compared by fingerprint, never by printing the material), reject a new identifier that is not above `highestKeyId`, and reject new material whose fingerprint appears in `fingerprintHistory`. The history keeps the fingerprint (SHA-256 of a label and the key material, not reversible) of **every key ever registered, including retired ones**, and is never shortened, so removing a retired key from the ring does not make its material acceptable again. The same fingerprint is stored in `key_usage.fingerprint`, which is `UNIQUE` and never deleted, so the database refuses it too. The ring history also covers a restore that went back past the registration. Reusing material under a new identifier would give the same AES key a fresh counter and bypass its lifetime nonce budget, so it is treated as an error (CR-11, CR-12). `keys:verify` repeats the checks. The fingerprint history is backed up with the ring.
+- **Start-up self-test does not encrypt.** At start-up the application loads the ring, validates each key is 32 bytes and statuses are consistent, and decrypts each key's `selfTest` known-answer value, which `keys:generate` encrypted once when it created the key (`keys:generate` registers the key, reserves at least one unit through the normal reservation statement, and only then encrypts it, so a new key's counter is at least 1). Because the self-test never encrypts, an instance can start when the active key is sealed or at the hard stop: it serves reads and decrypts existing data, and answers every request that needs a fresh encryption with `503`. It refuses to start on any ring failure. `/healthz` reports not ready without a loaded ring.
 - Application instances and the `cleanup` and re-encryption tasks all mount the same ring. The `db` and `backup` services never mount it.
 
-**Generation.** `deno task keys:generate` prints a new random 32-byte key in base64 and the next free key id. The operator adds it to the ring file. The command writes nothing into the repository.
+**Generation and ring changes (CR-15).** All ring changes (`keys:generate`, `keys:activate`, `keys:seal`, `keys:abandon`) run only in the dedicated `keymgmt` job (`deployment.md` section 2.1), never in `app` or `cleanup`. They **write key material directly into the protected ring source file** and never print it: output shows only the key identifier, status and the first 8 hex digits of the fingerprint. Logs, job output and error messages never contain key material. Every ring-changing operation is serialised by a single-writer lock (a PostgreSQL advisory lock held for the whole operation, including the ring backup) and writes the ring with a version check: it reads `generation`, writes a new file with `generation + 1`, and replaces the old file only if `generation` is still the one it read, otherwise it aborts and starts again. So two concurrent generators can never publish from stale snapshots and lose each other's history entries.
 
 **Backup of the ring.**
 - Back up the ring file (all keys, including `DECRYPT_ONLY` ones) separately from database backups, in storage that does not share credentials with database backups. Each founding collaborator holds an encrypted copy (for example an age or GPG-encrypted file or a password-manager attachment).
@@ -205,20 +221,40 @@ Prohibited without exception: decrypted values in logs, diagnostics, metrics, tr
 - A ring backup is kept at least as long as any database backup that may contain ciphertext under any key in it (R10.11).
 - Two people can recover the ring. Nobody keeps the only copy.
 
-**Recovery (database restore).** See also `deployment.md` section 6.
-1. Restore the database backup into a clean database.
-2. Obtain the newest ring backup (highest `generation`, never an older copy that shows a different key `ACTIVE`). It must contain every `key_id` referenced by the restored data.
-3. Run `deno task keys:verify` against the restored database and the ring. It lists the distinct `key_id` and `fingerprint_key_id` values, confirms each is in the ring, and test-decrypts every ciphertext row (R10.12).
-4. **Activate a new key before traffic (R10.13, RD-13).** Generate a new key, add it to the ring as the only `ACTIVE` key, mark the previous active key `DECRYPT_ONLY`, increase the ring `generation`, and back up the ring. Skip this only if the restore is proved lossless. Re-run `keys:verify`.
+**Recovery (database restore).** See also `deployment.md` section 6. Before step 1, stop and drain every process that can encrypt (`app`, `cleanup`, `reencrypt` and any key job), so no allowance or counter changes during the restore and any lossless comparison.
+1. Restore the database backup into a clean database, and run migrations straight away if the backup is older than the current schema, because every later step uses current tables and columns (CR-21).
+2. Obtain the **newest** ring (highest `generation`) and its `highestKeyId`, never a ring from the database backup date, because the database may have gone back past keys that were created and used afterwards. It must contain every `key_id` referenced by the restored data.
+3. Reconcile the admission gate with `keys:reconcile-gate` (offline, under the ring lock): it confirms that every key id referenced by restored ciphertext is in the newest ring and sets `ring_state.required_key_ids` to the keys that ring loads, so a restored requirement for a retired or abandoned key cannot block the verifier or the restarted readers (CR-19). Then run `deno task keys:verify` against the restored database and the ring. It lists the distinct `key_id` and `fingerprint_key_id` values, confirms each is in the ring, and test-decrypts every ciphertext row (R10.12).
+4. **Activate a new key before traffic (R10.13, RD-13).** First **record the set S of every key identifier in the newest ring's `fingerprintHistory` as it stands, before any new key is added** (every key ever registered, including retired keys). Then generate a new key with an identifier above `highestKeyId` (the tool rejects duplicate or previously used material), activate it with `keys:activate --offline`, which refuses while any reader holds a presence lock (CR-17), as the only `ACTIVE` key (no staging is needed, traffic is stopped and every instance restarts together), mark the previous active key `DECRYPT_ONLY`, increase the ring `generation`, back up the ring, and **seal exactly the identifiers in S** (`deno task keys:seal`, which inserts a sealed row with the fingerprint from the history if the restored database has none, so the database registry of fingerprints is restored too), so the restored, possibly lowered counters cannot grant reservations. **Do not seal the new key.** With every service still stopped, run `keys:reconcile-gate` again (it refuses while any reader is live). Only then start the services, as fresh processes, so that no allowance survives (CR-20). Skip the new key and the sealing only if the restore is proved lossless: for every key that can still encrypt (the `ACTIVE` key and every `STAGED` key) the restored row exists with the same sealed flag and a counter not lower than before, **and** for every identifier in `fingerprintHistory` the restored row exists with its original fingerprint and sealed flag (CR-14, CR-15). Still restart every instance. Re-run `keys:verify`.
 5. Only then start the application, run cleanup, and accept traffic.
 6. If a needed key is missing, the rows under it are unrecoverable. Affected games cannot be played or shown. Their outcomes and counts survive. Games that finished remain deletable by cleanup.
 
-**Rotation (planned, routine, for example annually or on staff change; mandatory at 2^28 encryptions).**
-1. Generate a new key. Add it to the ring as a new id. Back up the ring (new copy).
-2. Deploy the ring with the new key `ACTIVE` and the previous key `DECRYPT_ONLY`. New writes use the new key. Existing rows still decrypt because each row names its key.
-3. Run `deno task reencrypt` (R10.5), see 3.8. Record the completion date D.
-4. Verify no row references the old key with `keys:verify`.
-5. Retire the old key (3.9) no earlier than D + 35 days.
+**Rotation (planned, routine, for example annually or on staff change; mandatory by 2^28 reserved units). Three phases, the same whether the key is below 2^27 or already past 2^28.**
+1. **Stage.** `deno task keys:generate` (new identifier above `highestKeyId`, duplicate or previously used material rejected, key registered, at least one unit reserved, self-test value encrypted). Add the new key to the ring as `STAGED` and raise `generation`. Back up the ring (new copy). **Restart every instance**, one after another, with this ring. When every live reader (every process holding a presence lock on a live database connection) has acknowledged the staged key in `instance_ring_reports` (`database-schema.md` 6.2a), every reader can decrypt anything the new key will write. `keys:activate` checks this against the live roster and refuses otherwise (CR-16, CR-17).
+2. **Activate.** Change the ring: new key `ACTIVE`, previous key `DECRYPT_ONLY` with `deactivatedAt`, raise `generation`, back up the ring. **Restart every instance** again, one after another. During this rolling restart some instances encrypt with the previous key and some with the new one. Both are present and unsealed on every instance, so nothing is unreadable. Allowances live in memory only, so a restarted instance holds none. Confirm every instance reports the new generation.
+3. **Seal.** `deno task keys:seal <previous id>` seals the previous key only: `sealed = true`, counter 2^30. The seal waits for transactions that are in their commit-time check on that key and commits after them. After this commits no instance can reserve under the key, no request that begins afterwards passes the pre-encryption check, and no transaction can commit ciphertext under it, because the commit-time check of any later transaction sees the seal and rolls back (`database-schema.md` section 6.2, CR-13). Units reserved but never used stay counted against the previous key.
+4. Run `deno task reencrypt` (R10.5), see 3.8. Record the completion date D.
+5. Verify no row references the previous key with `keys:verify`.
+6. Retire the previous key (3.9) no earlier than D + 35 days. Its fingerprint stays in the history for ever.
+### 3.6a Key lifecycle (single summary, RD-14, CR-10)
+
+| State of a key | Ring status | `key_usage` | Reservations | Encryption | Decryption |
+|---|---|---|---|---|---|
+| Registered, active, below 2^27 | `ACTIVE` | `sealed = false`, `R` below 2^27 | Granted | Yes | Yes |
+| Warning | `ACTIVE` | `R` at or above 2^27 | Granted, warning raised | Yes | Yes |
+| Rotation overdue | `ACTIVE` | `R` at or above 2^28 | Granted until 2^30, critical alert, admin health `degraded` | Yes | Yes |
+| Hard stop | `ACTIVE` | `R` = 2^30 | Refused (a block that would exceed 2^30) | Only with units already held, then `503` | Yes |
+| Staged (new key, before activation) | `STAGED` | `sealed = false`, `R` at least 1 (self-test unit) | Not requested | No | Yes |
+| Superseded (after rotation, at any `R`, including after 2^28) | `DECRYPT_ONLY`, `deactivatedAt` set | `sealed = true`, `R` = 2^30, admin health `sealed` (expected, no alert) | Refused | **No.** No ciphertext under it can be committed after the seal commits, whatever allowance an instance holds (commit-time check) | Yes |
+| Retired | removed from the ring, fingerprint kept in `fingerprintHistory` | **row kept permanently** (sealed, fingerprint kept) so the database keeps refusing that material | Refused | No | No (no data may remain under it) |
+
+Rules for the transition to *Superseded*, identical in `database-schema.md` 6.3, `deployment.md` 6.1 and 6.3:
+- The new key is staged on every instance first, then becomes the active key, and every instance is restarted so that the ring and the allowances are fresh.
+- The previous key becomes decrypt-only, and is sealed only after every instance runs the new ring.
+- Outstanding in-memory allowances for the previous key are not usable: restarted instances have none, and a missed instance fails the pre-encryption check as soon as the seal commits. No ciphertext under the previous key can be committed after the seal: every transaction that writes ciphertext checks the key under a share lock immediately before commit, and the seal is ordered after any such transaction already holding it.
+- Unused reservations stay counted. Sealing never lowers a counter.
+- No instance resumes encryption under the previous key because it holds an allowance.
+- A superseded key never becomes active again.
 
 **Compromise response.** If a key may have leaked:
 1. Treat all data encrypted under it as exposed to whoever holds a copy of the database or backup made while the key existed.
@@ -248,7 +284,7 @@ A key is removed from the ring only when all of these hold:
 1. `keys:verify` shows no row in `secret_codes`, `guesses`, `idempotency_keys` or `token_rotations` references it.
 2. At least `BACKUP_RETENTION_DAYS` (35) have passed since re-encryption finished, so every backup that contains data under the key has expired and been deleted.
 3. No retained key backup is needed for restoring any database backup that still exists.
-4. The ring backup is updated, and the retired key is destroyed from the ring copies after the same retention.
+4. The ring backup is updated, and the retired key's **material** is destroyed from the ring copies after the same retention. Its identifier and fingerprint stay in `fingerprintHistory`, and its sealed `key_usage` row stays in the database, for ever (CR-14).
 
 Until then the key stays `DECRYPT_ONLY`. A compromised key may be retired earlier only by an explicit owner decision (3.6, compromise step 4).
 
@@ -303,7 +339,7 @@ Mechanisms:
 | T24 | Rematch hijack by a third party | Capability needs an access token to mint. Rotation revokes it. One rematch ever per original game (marker row, RD-6), and creating it revokes every other unused capability (CH-3). Only the presenting player gets seat 1 credentials. Invitation delivered by the creator out of band | Anyone given the invitation can take seat 2, as with any invitation |
 | T25 | Weak randomness | Only `crypto.getRandomValues` and `crypto.randomUUID`. `Math.random` banned by lint rule outside the simulator | None identified |
 | T26 | Rotation replay abuse | Needs old token and key, short window, encrypted storage, same `401` outside the rule (section 2.2) | First rotator wins, window exposure |
-| T27 | Nonce reuse | Random 96-bit nonces, durable reservation counter shared by all instances, warning at 2^27, rotation by 2^28, hard stop at 2^30 (RD-10, RD-13, section 3.3a). New key after any restore | Negligible at expected volume. A restore without a new key could understate usage, which the procedure prevents |
+| T27 | Nonce reuse | Random 96-bit nonces, one authoritative durable reservation counter per key with a strict global limit of 2^30 (atomic conditional statement plus `CHECK`), warning at 2^27, rotation by 2^28 (reservations continue until the hard stop, RD-14), hard stop at 2^30 (RD-10, RD-13, CR-9, section 3.3a). New key and sealing of older keys after any restore | Negligible at expected volume. A restore without a new key could understate usage, which the procedure prevents |
 | T28 | IP-based rate limit evasion or abuse of forwarded headers | Forwarded IP trusted only from `TRUSTED_PROXY_CIDRS`. Player buckets keyed by player id after a preliminary lookup | Shared NAT users share limits. Attackers with many IPs. A holder of an old revoked token can drain the player's bucket until it refills |
 | T29 | Rate-limit data as personal data | Stores an HMAC of the IP with a secret, not the address. Rows deleted after an hour idle. Table excluded from backups (section 6.2) | HMAC key compromise together with a database copy allows IP confirmation, and for IPv4 enumeration of all addresses |
 | T30 | Restore reverts credential state | Documented procedure. Rate-limit table cleared, cleanup run, tokens rotated after backup are reset | Players who rotated after the backup lose their seat. Revoked tokens revive. No point-in-time recovery (RD-7, accepted risk, reassess before production) |
@@ -311,6 +347,7 @@ Mechanisms:
 | T32 | Race between expiry and operations | Single reference time, `>=` rule, lock | None identified |
 | T33 | Decrypted game data leaving through an unintended path | Exactly two serialisation exceptions, results gated on `COMPLETED` before any ciphertext read, redacting wrapper, no persistent plaintext, canary tests | Runtime memory residue |
 | T34 | Guessable rotation key | UUIDv4 required, 122 random bits, format enforced, plus old token needed | Client may use a weak generator. The server cannot detect it |
+| T35 | Key material reuse under a new identifier, identifier reuse, or re-registration of retired material, giving the same AES key a fresh counter | Ring loader and `keys:generate` reject duplicate material and non-increasing identifiers, `highestKeyId` is monotonic, `fingerprintHistory` keeps every key ever registered, `key_usage.fingerprint` is `UNIQUE` and never deleted, `keys:verify` repeats the checks (CR-11, CR-12) | Operator editing the ring by hand is detected at the next start-up. A restore that lost both the ring history and the database row is covered by the ring backup |
 
 ## 6. Privacy (R13.4, R13.7)
 

@@ -62,7 +62,8 @@ For a state-changing request the service applies checks in this order. The first
 6. For guesses and rotation: idempotency lookup, replay or `IDEMPOTENCY_CONFLICT` (R5.9).
 7. Game state (`GAME_NOT_ACTIVE`, `GAME_COMPLETED`, `GAME_FULL`, …).
 8. Player rules (`ALREADY_SOLVED`, `ATTEMPTS_EXHAUSTED`, `CODE_ALREADY_SET`, `REMATCH_ALREADY_CREATED`).
-9. Apply changes and commit.
+9. **Encryption availability** (only for an operation that needs a fresh encryption): if the operation holds no claimed unit (the pre-encryption check failed, the key is sealed or at the hard stop, or a reservation was refused before `BEGIN`), end with `503 SERVICE_UNAVAILABLE` and `Retry-After`. Nothing has been written. Steps 6 to 8 are unaffected, so an idempotent replay, a conflict and every rule rejection still get their normal answer even when no unit is available (`design.md` section 9.1).
+10. Apply changes and commit.
 
 For operations without a game id in the path (create rematch), step 2 finds the original game, step 4 locks it, and step 5 re-validates under the lock. Only the step 5 result counts.
 

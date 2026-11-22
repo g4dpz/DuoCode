@@ -42,7 +42,10 @@ for fn,t in files.items():
 check(f'C03 every TS group and TS-CONC id referenced is defined ({len(defined)} groups, {len(conc_def)} concurrency scenarios)',pr)
 # 4 decision ids
 reg=req
-ids={'ND':9,'C':7,'CL':8,'RD':13,'OD':10,'CR':8,'CH':6}
+ids={}
+for k in ('ND','C','CL','RD','OD','CR','CH'):
+    nums=[int(x) for x in re.findall(rf'^\| {k}-(\d+) \|',req,re.M)]
+    ids[k]=max(nums) if nums else 0   # the register is the source of truth; any reference above it is unknown
 pr=[]
 for fn,t in files.items():
     for k,mx in ids.items():
@@ -127,7 +130,7 @@ for fn in spec:
     for k in set(re.findall(r'`([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)`',files[fn])):
         if k.startswith(('TS_','INVALID_','GAME_')): continue
         if k in enum or k in {'READ_ONLY','SPDX','SOURCE_DATE_EPOCH'}: continue  # SOURCE_DATE_EPOCH is a build variable, not application configuration
-        if re.fullmatch(r'(WAITING_FOR_PLAYER|WAITING_FOR_CODES|PLAYER_[12]_WINS|DRAW|ACTIVE|COMPLETED|EXPIRED|NOT_STARTED|IN_PROGRESS|SOLVED|EXHAUSTED|DECRYPT_ONLY|ROTATED|SUPERSEDED|ROTATION_SIDE_EFFECT|REVOKED|CONSUMED|LIVE|ACCESS|INVITATION|REMATCH|EXPIRED_PENDING)',k): continue
+        if re.fullmatch(r'(WAITING_FOR_PLAYER|WAITING_FOR_CODES|PLAYER_[12]_WINS|DRAW|ACTIVE|COMPLETED|EXPIRED|NOT_STARTED|IN_PROGRESS|SOLVED|EXHAUSTED|DECRYPT_ONLY|ROTATED|SUPERSEDED|ROTATION_SIDE_EFFECT|REVOKED|CONSUMED|LIVE|ACCESS|INVITATION|REMATCH|EXPIRED_PENDING|ROTATION_OVERDUE|WARNING|STAGED)',k): continue
         if k not in allowed and not k.startswith(('RATE_LIMIT_','TTL_')) : pr.append(f'{fn}: {k} not in configuration table')
 check(f'C11 every configuration key named in the specification is in design.md section 13 ({len(cfg)} keys)',pr)
 # 12 deployment scopes vs design
@@ -187,7 +190,7 @@ pr=[]
 for fn in spec:
     if fn=='revision-3.1-review-package.md': continue
     for i,l in enumerate(files[fn].splitlines(),1):
-        if re.search(r'\b(?:RD|CH|ND|CR|CL)-\d+',l) and re.search(r'\bpending\b',l,re.I) and 'Pending** (needs' not in l and 'None of the technical decisions is pending' not in l:
+        if re.search(r'\b(?:RD|CH|ND|CR|CL)-\d+',l) and re.search(r'\b[Pp]ending\b',l) and 'Pending** (needs' not in l and 'None of the technical decisions is pending' not in l:
             pr.append(f'{fn}:{i}: {l.strip()[:110]}')
 check('C20 no decision recorded as approved in the register is still described as pending elsewhere',pr)
 # 21 no application code, migrations or implementation tasks
@@ -206,6 +209,75 @@ for f in tracked:
     elif f.startswith('.github/workflows/'): continue               # CI skeleton added earlier at the owner request, no application logic
 if any(l.startswith('- [x]') for l in files['tasks.md'].splitlines()): pr.append('a task is marked done')
 check('C21 no application code, database migration or implementation directory exists (only specification, licensing, CI skeleton and the two specification tool scripts)',pr)
+# 23 key usage design consistency (CR-9)
+pr=[]
+ku=re.search(r"CREATE TABLE key_usage \((.*?)\n\);",ddl,re.S)
+if not ku: pr.append('key_usage table missing')
+else:
+    body=ku.group(1)
+    if 'shard' in body: pr.append('key_usage still has a shard column')
+    if not re.search(r'key_id\s+smallint PRIMARY KEY',body): pr.append('key_usage is not one row per key')
+    m=re.search(r'reserved <= (\d+)',body)
+    if not m or int(m.group(1))!=2**30: pr.append('CHECK constant is not 2^30')
+    if 'sealed' not in body or 'NOT sealed OR reserved = 1073741824' not in body: pr.append('sealed flag and its CHECK are missing')
+dsg=files['design.md']
+def cfgval(k):
+    m=re.search(r'\| `'+k+r'` \| `(\d+)`',dsg); return int(m.group(1)) if m else None
+w,r_,h,b=cfgval('KEY_USAGE_WARN'),cfgval('KEY_USAGE_ROTATE_BY'),cfgval('KEY_USAGE_HARD_STOP'),cfgval('KEY_USAGE_BLOCK')
+if (w,r_,h)!=(2**27,2**28,2**30): pr.append(f'threshold defaults {w},{r_},{h} are not 2^27, 2^28, 2^30')
+if h is None or b is None: pr.append('KEY_USAGE_HARD_STOP or KEY_USAGE_BLOCK default missing or not numeric')
+elif b<1 or h%b!=0: pr.append('hard stop is not a positive multiple of the block')
+if 'reserved + $2 <= $3' not in files['database-schema.md']: pr.append('reservation statement guard missing in database-schema.md')
+if 'AND NOT sealed' not in files['database-schema.md']: pr.append('reservation statement does not check the sealed flag')
+if 'fingerprint bytea NOT NULL UNIQUE' not in files['database-schema.md']: pr.append('key_usage.fingerprint UNIQUE missing')
+if 'INSERT INTO key_usage (key_id, fingerprint) VALUES ($1, $2)' not in files['database-schema.md']: pr.append('registration statement lacks the fingerprint')
+for fn in ('security-assessment.md','deployment.md','design.md','database-schema.md','requirements.md'):
+    if 'STAGED' not in files[fn]: pr.append(f'{fn} does not describe the STAGED ring status')
+if 'FOR SHARE' not in files['database-schema.md'] or 'commit-time check' not in files['design.md'] or 'commit-time check' not in files['deployment.md']: pr.append('commit-time check under a share lock missing')
+if 'WHERE key_usage.fingerprint = EXCLUDED.fingerprint' not in files['database-schema.md']: pr.append('registration does not reject a mismatched fingerprint')
+if 'fingerprintHistory' not in files['deployment.md']: pr.append('restore does not seal from the fingerprint history')
+if 'fingerprintHistory' not in files['security-assessment.md']: pr.append('ring fingerprintHistory missing')
+if 'AND $2 > 0' not in files['database-schema.md']: pr.append('reservation statement does not reject zero or negative requests')
+if 'ON CONFLICT (key_id) DO UPDATE SET reserved = 1073741824, sealed = true' not in files['database-schema.md']: pr.append('seal statement does not insert a missing row')
+for term,fn in (('highestKeyId','security-assessment.md'),('highestKeyId','deployment.md'),('KEY_USAGE_REFRESH_SECONDS','design.md'),('known-answer','security-assessment.md'),('claim','design.md')):
+    if term not in files[fn]: pr.append(f'{fn} lacks {term}')
+if 'KEY_USAGE_REFRESH_SECONDS' not in files['requirements.md']: pr.append('R10.10 does not mention the refresh interval')
+if 'SELECT NOT sealed AND fingerprint = $2 AS usable FROM key_usage' not in files['database-schema.md']: pr.append('pre-encryption check statement missing or not bound to the fingerprint')
+if 'AND fingerprint = $4' not in files['database-schema.md']: pr.append('reservation statement not bound to the fingerprint')
+for fn in ('security-assessment.md','deployment.md','design.md','database-schema.md'):
+    if 'sealed' not in files[fn]: pr.append(f'{fn} does not describe sealing')
+for fn in ('security-assessment.md','deployment.md','database-schema.md','requirements.md'):
+    if 'CR-10' not in files[fn]: pr.append(f'{fn} does not reference CR-10 (key lifecycle after rotation)')
+for term in ('Reserved unit','Encryption invocation','Allowance'):
+    if term not in files['requirements.md']: pr.append(f'term {term!r} not in requirements glossary')
+    if term not in files['database-schema.md']: pr.append(f'term {term!r} not defined in database-schema.md 6.2')
+for fn in spec:
+    if fn=='revision-3.1-review-package.md': continue
+    for i,l in enumerate(files[fn].splitlines(),1):
+        if re.search(r'shard',l,re.I) and not re.search(r'replac|draft|old_key_usage|negative control|removed|without shard|With shards|sharding',l,re.I):
+            pr.append(f'{fn}:{i}: shard mentioned as current design: {l.strip()[:90]}')
+for need in ('keys:seal','TS-CONC-21','TS-CONC-22','TS-CONC-23','TS-CONC-24','TS-CONC-25','TS-CONC-26','TS-CONC-27','TS-CONC-28'):
+    if need not in files['test-strategy.md'] and need not in files['deployment.md']: pr.append(f'{need} missing')
+if 'RD-14' not in files['requirements.md'] or 'CR-9' not in files['requirements.md']: pr.append('RD-14 or CR-9 missing from the register')
+check('C23 key usage design is consistent: one authoritative row per key, CHECK at 2^30, thresholds 2^27 / 2^28 / 2^30, strict statement, terms defined, sharding only mentioned as replaced',pr)
+# 24 verify-schema uses the specified statements
+vs=open(d+'verify-schema.py').read()
+pr=[]
+if '(HERE / "database-schema.md")' not in vs: pr.append('verify-schema.py does not read database-schema.md')
+for name in ('reserve_sql','register_sql','check_sql','commit_check_sql','report_sql','activation_sql','offline_sql','presence_sql','admission_sql','require_sql','reconcile_sql'):
+    m=re.search(r'^\s*'+name+r'\s*=\s*(.+)$',vs,re.M)
+    if not m: pr.append(f'{name} is not assigned'); continue
+    if not m.group(1).startswith('next(b for b in blocks if'): pr.append(f'{name} is not extracted from the specification SQL blocks: {m.group(1)[:60]}')
+    if len(re.findall(r'^\s*'+name+r'\s*=',vs,re.M))!=1: pr.append(f'{name} is assigned more than once')
+m=re.search(r'^\s*seal_sql\s*=\s*(.+)$',vs,re.M)
+if not m or not m.group(1).startswith('re.search(') or 'spec_text' not in m.group(1): pr.append('seal_sql is not extracted from the specification text')
+for name in ('INSERT INTO key_usage','UPDATE key_usage','SELECT NOT sealed'):
+    lits=[l for l in vs.splitlines() if name in l and 'next(b for b in blocks' not in l and 're.search(' not in l and not l.strip().startswith('#') and 'old_key_usage' not in l and 'set_R' not in l and 'INSERT INTO key_usage(key_id, fingerprint, reserved)' not in l]
+    for l in lits:
+        if 'SET ROLE' in l: continue   # permission probes, not specified statements
+        if 'expect_error' in l or 'reserved = -1' in l or 'reserved = 1;' in l or 'reserved = {L + 1}' in l or 'SET sealed = true WHERE key_id = 2' in l: continue
+        pr.append(f'hard-coded key_usage statement in verify-schema.py: {l.strip()[:80]}')
+check('C24 the schema verification tool takes the reservation, registration and sealing statements from database-schema.md',pr)
 # 22 OpenAPI lint
 import shutil as _sh
 if _sh.which('npx'):
