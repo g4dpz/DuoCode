@@ -296,6 +296,8 @@ The repository layout is:
 duocode/
 ├── .github/
 │   ├── workflows/
+│   │   ├── ci.yml
+│   │   └── copilot-setup-steps.yml
 │   └── copilot-instructions.md
 ├── .kiro/
 │   └── specs/
