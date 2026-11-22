@@ -1,0 +1,9 @@
+version: 2
+secret:
+  ignored_matches:
+    # Throwaway password of the PostgreSQL service container that exists only
+    # for the duration of a CI run (.github/workflows/ci.yml). Not a real secret.
+    - name: CI PostgreSQL service container password (ci.yml)
+      match: duocode_ci
+    - name: CI PostgreSQL service container connection string (ci.yml)
+      match: postgres://duocode:duocode_ci@localhost:5432/duocode_test
