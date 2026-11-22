@@ -309,11 +309,21 @@ try:
             self.allowance += self.block
             return total
 
+        def claim(self):
+            """Claim one unit for an operation, reserving first if the allowance is empty (claim BEFORE the check)."""
+            if self.allowance == 0:
+                self.reserve_block()          # raises Refused when no unit can be reserved
+            self.allowance -= 1
+            return 1
+
         def request(self):
-            """One encrypting request: the pre-encryption check first (spec statement), then the invocation."""
+            """One encrypting request in the specified order: claim, then the pre-encryption check (spec statement) as the
+            last step, returning the claim if the check fails, then consume exactly that claim."""
+            c = self.claim()
             if not usable(self.key):
+                self.allowance += c           # return the unused claim
                 raise Refused()
-            self.encrypt()
+            self.invocations += 1             # consume the claimed unit
 
         def encrypt(self):
             if self.allowance == 0:
@@ -392,9 +402,17 @@ try:
                 return a
 
     def finish(a, cmds=""):
-        a.stdin.write(cmds + "\n\\q\n"); a.stdin.flush()
-        out, err = a.communicate(timeout=30)
-        return out.strip()
+        try:
+            a.stdin.write(cmds + "\n\\q\n"); a.stdin.flush()
+            out, err = a.communicate(timeout=30)
+            return out.strip()
+        except Exception:
+            a.kill()                          # terminate and reap a stalled session so its locks are released (CR-15)
+            try:
+                a.communicate(timeout=10)
+            except Exception:
+                pass
+            raise
 
     @test("negative control: the REPLACED 32-shard design overshoots the limit with two instances (why it was replaced)")
     def _():
@@ -710,8 +728,8 @@ try:
     def _():
         reset_data(); register(1); set_R(1, 2 ** 28 + 5 * BLOCK)          # key already past the rotation threshold
         A = Instance(key=1)
-        A.request()                                       # A reserves a block and holds 1023 unused units
-        assert A.allowance == BLOCK - 1 and reserve(1) is not None       # reservations were still granted past 2^28 (RD-14)
+        A.request()                                       # A claims (reserving a block), passes the check, consumes: 1023 left
+        assert A.allowance == BLOCK - 1 and A.invocations == 1 and reserve(1) is not None   # reservations still granted past 2^28 (RD-14)
         before_seal = R()
         register(2); seal(1)                              # rotation completes: new key registered, old key sealed
         assert R() == L and R() >= before_seal            # unused reservations stay counted, the counter never decreased
@@ -719,7 +737,7 @@ try:
             A.request(); raise AssertionError("A encrypted under the sealed key although it still held an allowance")
         except Refused:
             pass
-        assert A.allowance == BLOCK - 1                   # the allowance is untouched but unusable
+        assert A.allowance == BLOCK - 1                   # the claim was returned when the check failed: allowance unchanged but unusable
         try:
             A.reserve_block(); raise AssertionError("a reservation was granted under the sealed key")
         except Refused:
@@ -895,6 +913,31 @@ try:
         reset_data(); register(1, material="A"); seal(1, material="A")
         assert sql("SELECT count(*) FROM key_usage WHERE key_id=1;") == "1"   # retirement never deletes the row
         register(9, material="A", expect_error="key_usage_fingerprint_key")
+
+    @test("in-flight request between check and seal: it passed the check before the seal, its commit-time check after the seal rolls it back (CR-15)")
+    def _():
+        reset_data(); register(1); new_game(1); new_player(11, 1, 1)
+        A = Instance(key=1)
+        c = A.claim()
+        assert usable(1) is True                          # the request passed its pre-encryption check ...
+        seal(1)                                           # ... then the key is sealed before its transaction commits
+        out = sql("BEGIN;\n"
+                  f"INSERT INTO secret_codes(player_id,key_id,ciphertext) VALUES ('{u(11)}',1,decode(repeat('01',32),'hex'));\n"
+                  + commit_check_sql.replace("$1", "1") + "\nROLLBACK;")
+        assert out.strip().splitlines()[-1] == "t"        # the commit-time check sees the seal, the application rolls back
+        A.invocations += c                                # the unit was consumed by the (rolled-back) encryption and stays counted
+        assert sql("SELECT count(*) FROM secret_codes WHERE key_id=1;") == "0"
+        assert A.invocations <= R(1) == L
+
+    @test("ring single-writer lock: a second ring-changing operation cannot take the advisory lock while the first holds it (CR-15)")
+    def _():
+        lock_key = re.search(r"pg_advisory_lock\((\d+)\)", spec_text).group(1)   # the key from the specification
+        A = session(f"SELECT pg_advisory_lock({lock_key});")
+        try:
+            assert sql(f"SELECT pg_try_advisory_lock({lock_key});") == "f"
+        finally:
+            finish(A, f"SELECT pg_advisory_unlock({lock_key});")
+        assert sql(f"SELECT pg_try_advisory_lock({lock_key}); SELECT pg_advisory_unlock({lock_key});").splitlines()[0] == "t"
 
     def tool(name, override):
         cand = override or (str(SB / name) if (SB / name).exists() else None)

@@ -42,7 +42,10 @@ for fn,t in files.items():
 check(f'C03 every TS group and TS-CONC id referenced is defined ({len(defined)} groups, {len(conc_def)} concurrency scenarios)',pr)
 # 4 decision ids
 reg=req
-ids={'ND':9,'C':7,'CL':8,'RD':14,'OD':10,'CR':14,'CH':6}
+ids={}
+for k in ('ND','C','CL','RD','OD','CR','CH'):
+    nums=[int(x) for x in re.findall(rf'^\| {k}-(\d+) \|',req,re.M)]
+    ids[k]=max(nums) if nums else 0   # the register is the source of truth; any reference above it is unknown
 pr=[]
 for fn,t in files.items():
     for k,mx in ids.items():

@@ -101,6 +101,7 @@ Revision 3.1 review package: `revision-3.1-review-package.md` (change summary fr
 ## Phase 9: Deployment
 
 - [ ] 9.1 Dockerfile (non-root, read-only root, minimal Deno permissions). (R18.1)
+- [ ] 9.2a `keymgmt` job per `deployment.md` 2.1: its own database role, writable ring directory, backup-store secret, ring single-writer lock and version-checked write, no key material in output. (R10.4, CR-15)
 - [ ] 9.2 `deployment/docker-compose.yml` with `proxy`, `app` (public and admin listeners), `db`, `migrate`, `cleanup`, `backup`, secrets for the key ring and the rate-limit key, networks per `deployment.md` section 1. (R18.2, R21.1, R21.2)
 - [ ] 9.3 Caddy custom build per `deployment.md` section 4.3: re-verify and record pins in `BUILD-PINS.md`, commit `go.mod`, `go.sum`, `main.go`, `Dockerfile`, build twice in CI and compare digests, attest provenance, generate an SBOM, run `govulncheck`, reference the image by digest in Compose, write `BUILD-RECORD.md`, document maintenance and the Nginx fallback. Configuration with the approved limits and `/admin/*` returning `404`. (R18.6, R20.1) (TS-OPS)
 - [ ] 9.4 `.env.example`, `secrets.example/`, configuration and operations docs including key generation, ring backup, rotation, retirement, compromise and recovery procedures. (R10.9, R18.4, R21.5)

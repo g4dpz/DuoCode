@@ -71,7 +71,7 @@ Your point was right. The revision 3.1 draft refused a reservation only after th
 
 **Files changed for CR-9:** `database-schema.md`, `design.md`, `security-assessment.md`, `deployment.md`, `test-strategy.md`, `requirements.md` (R10.10, R10.13, CR-9, RD-14, glossary), `traceability.md`, `tasks.md`, `verify-schema.py`, `check-consistency.py`, and this package.
 
-## 3B. Rotation after 2^28 (CR-10) and PR #2 review findings (CR-11 to CR-14)
+## 3B. Rotation after 2^28 (CR-10) and PR #2 review findings (CR-11 to CR-15)
 
 ### Rotation completed after the 2^28 threshold (your clarification)
 
@@ -164,6 +164,20 @@ New lock level L3 (`design.md` 8.2): the key row in share mode, taken last befor
 | 9 | Loaded material is not bound to the fingerprint registered for its identifier | Accepted and tested. The loader checks each entry against the history, and the pre-encryption check and the reservation statement both require `key_usage.fingerprint` to match the loaded material |
 | 10 | Retirement allowed the usage row to be removed | **Real inconsistency, fixed.** The row is kept for ever. Only the key material is destroyed |
 
+### Fifth Copilot review of PR #2 (commit `f7b08f7`): findings and dispositions (CR-15)
+
+7 new findings, all accepted. The carried threads (duplicate key material, `503` declarations, budget-safe start-up) were fixed earlier, answered in place and marked resolved.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | `keys:generate` printed a ring entry containing the key material | Accepted. Key material is written directly to the protected ring and never printed. Output shows identifier, status and a fingerprint prefix |
+| 2 | The verifier did not pause a request between its check and the seal | Accepted. New PostgreSQL test: a request passes its check, the key is sealed, and its commit-time check rolls it back |
+| 3 | The verifier's request model checked before claiming | **Real inconsistency in the test, fixed.** The model now claims, checks last, returns the claim on failure, and consumes only that claim |
+| 4 | A stalled session could hang the suite | Fixed: stalled sessions are killed and reaped before continuing |
+| 5 | Concurrent generators could publish from stale ring snapshots | Accepted. Every ring change takes a single-writer advisory lock for its whole run and writes the ring with a version check on `generation`. Tested on PostgreSQL |
+| 6 | No execution context could write the ring and its backup | Accepted. New `keymgmt` job (`deployment.md` 2.1) with its own database role, a writable ring source, backup-store access and narrow Deno permissions. Application permissions are unchanged |
+| 7 | The security assessment's recovery shortcut checked only active and staged keys | **Real inconsistency, fixed.** It now includes the history checks, as in R10.13 and `deployment.md` 6.1 |
+
 ## 4. Files (revision 3.1 branch, for history)
 
 Added: `.kiro/specs/duocode/revision-3.1-review-package.md` (replaces the revision 3 package), `.kiro/specs/duocode/check-consistency.py`, `.kiro/specs/duocode/verify-schema.py`, `CONTRIBUTING.md`, `LICENSE`, `NOTICE`.
@@ -179,13 +193,13 @@ Redocly lint of `openapi/openapi.yaml`: **valid, 0 errors, 0 warnings.** The Ope
 
 ### 5.2 Database schema, constraint and reservation tests
 
-`verify-schema.py` extracts the DDL, the reservation, registration, sealing and pre-encryption-check statements **from `database-schema.md`**, so the tested SQL is the specified SQL. It applies them to a throwaway cluster and runs 58 tests.
+`verify-schema.py` extracts the DDL, the reservation, registration, sealing and pre-encryption-check statements **from `database-schema.md`**, so the tested SQL is the specified SQL. It applies them to a throwaway cluster and runs 60 tests.
 
 | Server | Result |
 |---|---|
-| PostgreSQL 15.8 (Homebrew), with `pg_dump` and `pg_restore` | **58 of 58 passed**, three runs |
-| PostgreSQL 16.16 embedded build (no `pg_dump` of its version available) | **57 of 57 passed, 1 skipped** (the logical restore test), two runs |
-| **PostgreSQL 16.16 official `postgres:16` image (Debian, Docker Desktop)**, image digest `sha256:3950ad7c3148ca2175ef1b6c36c9efbf78957ae8fbe8b3a5d7c35af50500382f`, with its own `pg_dump` and `pg_restore` | **58 of 58 passed**, one run |
+| PostgreSQL 15.8 (Homebrew), with `pg_dump` and `pg_restore` | **60 of 60 passed**, three runs |
+| PostgreSQL 16.16 embedded build (no `pg_dump` of its version available) | **59 of 59 passed, 1 skipped** (the logical restore test), two runs |
+| **PostgreSQL 16.16 official `postgres:16` image (Debian, Docker Desktop)**, image digest `sha256:3950ad7c3148ca2175ef1b6c36c9efbf78957ae8fbe8b3a5d7c35af50500382f`, with its own `pg_dump` and `pg_restore` | **60 of 60 passed**, one run |
 
 What the tests cover (all use the real PostgreSQL statements and real concurrent connections, not a mocked counter):
 
@@ -220,8 +234,10 @@ What the tests cover (all use the real PostgreSQL statements and real concurrent
 | **Material bound to the registry (new, CR-14)** | Reservation and pre-encryption check refused a key whose loaded material differs from the registered fingerprint |
 | **Lossless proof covers history keys (new, CR-14 rule)** | A missing history row or an undone seal makes the restore not lossless |
 | **Retired keys keep their row (new, CR-14)** | The row stays after retirement and the material is refused under a new identifier |
+| **In-flight request between check and seal (new, CR-15)** | A request that passed its check before the seal had its transaction rolled back by the commit-time check after the seal. Its unit stayed counted |
+| **Ring single-writer lock (new, CR-15)** | A second operation could not take the ring advisory lock while the first held it |
 
-The rest of the 58 tests are the constraint tests (seats, nicknames and bidirectional controls, guess chain, credential binding, one rematch ever, idempotency, rotation record, rate limits, cleanup, invariant check, start-up validation rule).
+The rest of the 60 tests are the constraint tests (seats, nicknames and bidirectional controls, guess chain, credential binding, one rematch ever, idempotency, rotation record, rate limits, cleanup, invariant check, start-up validation rule).
 
 **Limits, stated plainly.** No application exists. The instance in these tests is a small model of the allowance and claim rules. Its reservations, seals and checks go to real PostgreSQL. The tests prove the SQL, the constraints and the policy. They do not prove that a future vault follows the policy, which is why the (APP) tests in `test-strategy.md` are required in Phase 4. The staged rolling rotation (zero decrypt failures), the re-encryption recount, the claim-before-check order in the vault and the per-role health reporting are specified as (APP) tests and have not been run.
 
@@ -248,7 +264,7 @@ PASS C15 no Phase 1 gate or task is marked approved in tasks.md
 PASS C16 OpenAPI constrains codes to 4 symbols from 1..6
 PASS C17 nickname forbidden character classes agree between OpenAPI and database CHECK (NUL aside)
 PASS C18 OpenAPI rotation key pattern accepts v4 UUIDs and rejects v1 and wrong-variant values
-PASS C19 every decision in the register has a row in the traceability decision map (72 decisions)
+PASS C19 every decision in the register has a row in the traceability decision map (73 decisions)
 PASS C20 no decision recorded as approved in the register is still described as pending elsewhere
 PASS C21 no application code, database migration or implementation directory exists
 PASS C23 key usage design is consistent: one authoritative row per key, CHECK at 2^30, thresholds 2^27 / 2^28 / 2^30, strict statement, terms defined, sharding only mentioned as replaced
@@ -293,4 +309,4 @@ Inputs only you can give. I have not invented any of them:
 3. LI-1 to LI-4 (section 6).
 4. The (APP) tests and the restore and rotation drills with real tools (section 5.4).
 5. Drafting proposals not explicitly approved: proxy access-log retention (14 days, no IP by default), backup recipients, a named owner for the Caddy build, the 7-day target for critical proxy security upgrades, re-verification of the Caddy version pins at build time. The privacy notice and UK GDPR wording remain tasks.
-6. A fifth Copilot review of the CR-14 corrections is requested (see the report with PR #2).
+6. A sixth Copilot review of the CR-15 corrections is requested (see the report with PR #2).

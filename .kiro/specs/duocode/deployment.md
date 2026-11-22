@@ -36,6 +36,23 @@ Networks: `edge` (proxy and app public listener) and `internal` (app, db, migrat
 - Dependencies pinned with `deno.lock`. The image build uses the lockfile.
 - PostgreSQL role for the application has the minimum rights it needs on the application schema. The `backup` role is read-only.
 
+### 2.1 Key management job (`keymgmt`, CR-15)
+
+Ring changes need write access to the ring and to the key backup store. The application must not have either. A separate one-shot job does this work:
+
+| Item | `keymgmt` job | `app`, `cleanup`, `reencrypt` |
+|---|---|---|
+| Ring source file (host path, owned by a dedicated key-management user, mode 0600, directory 0700) | Read and write | No access to the source. They receive it read-only as the Docker secret `duocode_code_keyring` at start-up |
+| Key backup store credentials | Yes, its own Docker secret | No |
+| Database | Its own role: may insert and update `key_usage` and take the ring advisory lock. No access to game tables | Application role, unchanged |
+| Network | Database and backup store only | Unchanged |
+| Started by | An operator, on demand (`docker compose run --rm keymgmt <command>`) | Compose |
+
+- Commands: `keys:generate`, `keys:activate`, `keys:seal`, `keys:abandon`, `keys:verify`. Every command except `keys:verify` takes the ring single-writer lock (`pg_advisory_lock` on a fixed key) for its whole run, writes the ring with the version check described in `security-assessment.md` section 3.6, backs up the new ring before releasing the lock, and only then exits.
+- The job never prints key material. Output: identifier, status, fingerprint prefix, ring generation.
+- Distribution: after a ring change, the operator restarts the instances (the phases in 6.4). Each instance reads the new ring read-only at start-up. The application's permissions are not changed by this.
+- The job image is the application image, run with different Deno permissions (`--allow-read` and `--allow-write` limited to the ring directory, `--allow-net` limited to the database and the backup store).
+
 ## 3. Configuration and secrets
 
 Keys and defaults are defined once in `design.md`, section 13. This section covers where values come from.
@@ -211,7 +228,7 @@ Follow the checklist in `security-assessment.md` section 3.9: `keys:verify` show
 The same procedure applies whether the rotation is routine, prompted by the warning at 2^27, or late because the key already passed 2^28 (`ROTATION_OVERDUE`, reservations still granted). The rules are defined once in `database-schema.md` section 6.3 and `security-assessment.md` sections 3.6 and 3.6a. It has **three phases**, so that no instance ever meets ciphertext it cannot decrypt:
 
 **Phase 1, stage.**
-1. `deno task keys:generate`. The identifier is above `highestKeyId`. The tool rejects duplicate or previously used key material, registers the key (row and fingerprint), reserves at least one unit, encrypts the self-test value, and prints the ring entry.
+1. `deno task keys:generate`, run in the `keymgmt` job (section 2.1). It writes the key material directly into the protected ring source file and prints only the identifier, status and fingerprint prefix, never the material. The identifier is above `highestKeyId`. The tool rejects duplicate or previously used key material, registers the key (row and fingerprint), reserves at least one unit, encrypts the self-test value, and prints the ring entry.
 2. Add the key to the ring as `STAGED` (it decrypts, never encrypts), raise the ring `generation`, and back up the ring and its fingerprint history (section 5).
 3. **Restart every instance** (`app`, `cleanup`, `reencrypt` and `keys` jobs), one after another. Check that every instance reports the new generation in `duocode_key_ring_generation`.
 
