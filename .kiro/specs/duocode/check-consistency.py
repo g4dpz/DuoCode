@@ -534,11 +534,11 @@ if 'except a completed `getResults`' not in files['simulator-design.md']: pr.app
 check('C39 the simulator ban on opponent guesses and feedback exempts completed getResults',pr)
 pr=[]
 sm=files['state-machine.md']
-for need in ('Charging `pl:rotate` for twin requests','compensating autocommit statement','read-only check','outside the game transaction'):
+for need in ('Charging `pl:rotate` for twin requests','one charge statement','read-only check','outside the game transaction'):
     if need not in sm: pr.append('state-machine.md: missing '+need)
 if 'Twin rotations' not in files['test-strategy.md']: pr.append('test-strategy.md: no twin rotation test')
-if 'refunded' not in dep: pr.append('deployment.md: no pl:rotate refund rule')
-check('C40 the pl:rotate charging order for twin rotation requests (charge, refund after a validated replay, replay re-check before 429) is defined in state-machine.md and referenced in deployment.md and test-strategy.md',pr)
+if 'charged after its transaction commits' not in dep: pr.append('deployment.md: no pl:rotate post-commit charge rule')
+check('C40 the pl:rotate charging order for twin rotation requests (availability check, charge after a committed rotation, replay re-check before 429) is defined in state-machine.md and referenced in deployment.md and test-strategy.md',pr)
 # 22 OpenAPI lint
 import shutil as _sh
 if _sh.which('npx'):
