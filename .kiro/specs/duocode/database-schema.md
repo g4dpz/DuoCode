@@ -68,7 +68,8 @@ CREATE TABLE credentials (
   consumed_at    timestamptz,
   FOREIGN KEY (player_id, game_id) REFERENCES players (id, game_id) ON DELETE CASCADE,  -- credential bound to its game
   CHECK ((type = 'INVITATION') = (player_id IS NULL)),
-  CHECK ((revoked_at IS NULL) = (revoked_reason IS NULL))
+  CHECK ((revoked_at IS NULL) = (revoked_reason IS NULL)),
+  UNIQUE (id, game_id, player_id, type)                  -- target for the composite foreign keys of token_rotations (C2)
 );
 -- At most one live credential of each kind:
 CREATE UNIQUE INDEX credentials_one_access_per_player
@@ -101,6 +102,7 @@ CREATE TABLE guesses (
   CHECK (exact + misplaced <= 4),
   UNIQUE (player_id, guess_number),
   UNIQUE (player_id, guess_number, solved),
+  UNIQUE (id, player_id),                                -- target for the composite foreign key of idempotency_keys
   -- Contiguity and "no guess after a solving guess": guess n requires guess n-1 to exist and not be solved.
   FOREIGN KEY (player_id, prev_guess_number, prev_solved)
     REFERENCES guesses (player_id, guess_number, solved) ON DELETE CASCADE
@@ -109,13 +111,14 @@ CREATE TABLE guesses (
 CREATE TABLE idempotency_keys (                         -- guess submissions only (scope: player, operation, key)
   player_id          uuid NOT NULL REFERENCES players(id) ON DELETE CASCADE,
   key                uuid NOT NULL,
-  guess_id           bigint NOT NULL UNIQUE REFERENCES guesses(id) ON DELETE CASCADE,  -- one key per guess, one guess per key
+  guess_id           bigint NOT NULL UNIQUE,           -- one key per guess, one guess per key
   fingerprint        bytea NOT NULL CHECK (octet_length(fingerprint) = 32),  -- HMAC-SHA-256 over RFC 8785 envelope
   fingerprint_key_id smallint NOT NULL,                -- key ring entry used for the HMAC
   response_status    smallint NOT NULL,
   response_body      jsonb NOT NULL,                   -- original guess response, no code and no guess
   created_at         timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (player_id, key)
+  PRIMARY KEY (player_id, key),
+  FOREIGN KEY (guess_id, player_id) REFERENCES guesses (id, player_id) ON DELETE CASCADE  -- the guess belongs to the same player (C1)
 );
 
 CREATE TABLE token_rotations (                          -- rotation idempotency (scope: player, operation, key)
@@ -123,8 +126,10 @@ CREATE TABLE token_rotations (                          -- rotation idempotency 
   game_id           uuid NOT NULL,
   player_id         uuid NOT NULL,
   idempotency_key   uuid NOT NULL,
-  from_credential_id uuid NOT NULL UNIQUE REFERENCES credentials(id) ON DELETE CASCADE,
-  to_credential_id   uuid NOT NULL UNIQUE REFERENCES credentials(id) ON DELETE CASCADE,
+  from_credential_id uuid NOT NULL UNIQUE,
+  to_credential_id   uuid NOT NULL UNIQUE,
+  from_type         credential_type NOT NULL DEFAULT 'ACCESS' CHECK (from_type = 'ACCESS'),  -- both credentials are access tokens
+  to_type           credential_type NOT NULL DEFAULT 'ACCESS' CHECK (to_type = 'ACCESS'),
   fingerprint       bytea NOT NULL CHECK (octet_length(fingerprint) = 32),  -- SHA-256 over RFC 8785 envelope of ids only
   token_key_id      smallint,
   token_ciphertext  bytea CHECK (octet_length(token_ciphertext) = 75),      -- nonce(12) || token(47) || tag(16)
@@ -132,6 +137,9 @@ CREATE TABLE token_rotations (                          -- rotation idempotency 
   replay_until      timestamptz NOT NULL,
   UNIQUE (player_id, idempotency_key),
   FOREIGN KEY (player_id, game_id) REFERENCES players (id, game_id) ON DELETE CASCADE,
+  -- Both credentials belong to this rotation's game and player and are access tokens (C2):
+  FOREIGN KEY (from_credential_id, game_id, player_id, from_type) REFERENCES credentials (id, game_id, player_id, type) ON DELETE CASCADE,
+  FOREIGN KEY (to_credential_id, game_id, player_id, to_type) REFERENCES credentials (id, game_id, player_id, type) ON DELETE CASCADE,
   CHECK ((token_ciphertext IS NULL) = (token_key_id IS NULL))
 );
 
@@ -398,7 +406,7 @@ Consequence of G1 to G4: the number of encryption invocations under a key can ne
 SELECT pg_advisory_lock(4242002, $1);              -- $1 = presence id: a random int4 chosen at process start
 ```
 
-The lock disappears the moment the process or its connection ends, so `pg_locks` lists exactly the live readers. **Admission (CR-18).** Holding a presence lock is not enough to serve. Immediately after taking the lock, on the same connection, the process runs the admission check, with `$1` = the key ids in its loaded ring:
+The lock disappears the moment the process or its connection ends, so `pg_locks` lists exactly the live readers. **Clearing a previous report (C3).** The presence id is random, so a new process can draw the id of a predecessor that crashed and left its report behind. On every acquisition of the presence lock, including a reconnect, and before the admission check, the process runs `DELETE FROM instance_ring_reports WHERE presence_id = $1` on its presence connection, so it can never be counted with, or inherit, a report it did not write. **Admission (CR-18).** Holding a presence lock is not enough to serve. Immediately after taking the lock, on the same connection, the process runs the admission check, with `$1` = the key ids in its loaded ring:
 
 ```sql
 SELECT required_key_ids <@ $1::smallint[] AS admitted FROM ring_state WHERE id;
@@ -465,7 +473,30 @@ WHERE id
 RETURNING required_key_ids;
 ```
 
-Before running it, the tool confirms that every key id referenced by restored ciphertext (`secret_codes.key_id`, `guesses.key_id`, `token_rotations.token_key_id`) is in `$1`, using `SELECT DISTINCT` on those columns. If any is missing, the data under it cannot be decrypted by any reader, the tool stops, and the operator follows `deployment.md` section 6.2. The restore procedure runs the reconciliation twice: before `keyverify`, and again after the new key is activated and any staged key is abandoned. Offline activation never runs while any reader is live. When a key is retired (removed from the ring), `keys:retire` removes it from `required_key_ids` under the ring lock. Online activation never accepts `--offline`. Both run under the ring single-writer lock.
+Before running it, the tool confirms that every key id referenced by restored ciphertext (`secret_codes.key_id`, `guesses.key_id`, `token_rotations.token_key_id`) and every key id referenced by a restored keyed fingerprint (`idempotency_keys.fingerprint_key_id`) is in `$1`, using `SELECT DISTINCT` on those columns. If the check cannot read one of these columns (a missing grant or an unavailable table), the tool stops and recovery does not continue. If any is missing, the data under it cannot be decrypted by any reader, the tool stops, and the operator follows `deployment.md` section 6.2. The only exception is the offline accepted-loss procedure of `deployment.md` section 6.2 situation B (RD-19, RD-21): the operator names the missing key ids as accepted loss, the confirmation is skipped for exactly those ids, the gate is set to the keys the newest ring loads, and the key registry rows, fingerprint history and sealed counters stay unchanged.
+**Affected games under accepted loss (RD-21).** A missing key id can be a ciphertext key (`secret_codes.key_id`, `guesses.key_id`, `token_rotations.token_key_id`) or a fingerprint key (`idempotency_keys.fingerprint_key_id`). In an accepted-loss run the tool, in this order and only while no reader is live:
+1. Lists the affected games, with `$1` the missing key ids. The list covers lost ciphertext keys and lost fingerprint keys alike, so a game whose only loss is a fingerprint key or a replay key is included:
+```sql
+SELECT a.game_id, g.state
+FROM (SELECT p.game_id FROM secret_codes s JOIN players p ON p.id = s.player_id WHERE s.key_id = ANY($1::smallint[])
+      UNION SELECT p.game_id FROM guesses x JOIN players p ON p.id = x.player_id WHERE x.key_id = ANY($1::smallint[])
+      UNION SELECT t.game_id FROM token_rotations t WHERE t.token_key_id = ANY($1::smallint[])
+      UNION SELECT p.game_id FROM idempotency_keys i JOIN players p ON p.id = i.player_id WHERE i.fingerprint_key_id = ANY($1::smallint[])) a
+JOIN games g ON g.id = a.game_id
+ORDER BY a.game_id;
+```
+2. **Records the list durably** before it changes anything: an `acceptedLoss` entry in the ring history (missing key ids, key fingerprints, counts, date, the owners' written acceptance reference, and the affected game ids with their state at that time), written to the key backup store with the ring. The key part of the entry (key ids, fingerprints and counts) is kept permanently (RD-23). A game's id and state are removed from the entry when that game is deleted (step 5), so no game data outlives the backup limit of R11.9. A rerun after a crash recomputes the same list, because no game row has been deleted (no reader or cleanup has run), and merges it into the entry.
+3. In one transaction, expires every affected game that is still in progress, then sets the gate as above. `$2` is the list of affected game ids:
+```sql
+UPDATE games SET expires_at = now()
+WHERE id = ANY($2::uuid[]) AND state <> 'COMPLETED' AND expires_at > now()
+RETURNING id;
+```
+An affected game that is already completed is not changed: its outcome and counts survive, `getResults` returns an internal error for it, and its retention clock is unchanged. An in-progress affected game is expired by the existing rules (section 4): every credential is invalid at once, reads and writes return `GAME_EXPIRED`, and cleanup deletes it without decrypting anything.
+4. `keys:verify` takes the recorded list (`--accepted-loss`, option form for task 9.2a). It excludes only a row that references one of the recorded missing key ids **and** belongs to a recorded game. A row that references a missing key id and belongs to an unrecorded game, a missing key id that is not recorded, any other missing key, and any ciphertext that fails the test-decrypt all fail the verification. The verifier must pass for all other data before any reader restarts. The recorded entry is read from the ring, which `keyverify` already mounts read-only.
+5. **Retention of the record (RD-23).** The `keymgmt` command `keys:prune-accepted-loss` removes from every `acceptedLoss` entry each game id that no longer exists in `games` (`SELECT id FROM games WHERE id = ANY($2::uuid[])` returns the ids still present), and backs up the ring before releasing the ring lock. It is run at least daily (`deployment.md` section 7), needs no grants beyond those above, and never changes the key part of the entry. Older ring backups that still hold the removed ids expire with the other backups (R11.9).
+6. **Re-encryption (RD-24).** `reencrypt` skips every game whose id is in an `acceptedLoss` entry, because its rows under a missing key cannot be decrypted. It reads the entry from the ring, which it already mounts, and reports the number of games skipped (count only, no ids). Retiring a lost key (`keys:retire`, `security-assessment.md` section 3.9) does not require those games to be re-encrypted. Such a game that is completed keeps its outcome and counts until cleanup deletes it under the normal retention rules.
+The `keymgmt` role needs these column grants for the accepted-loss run only (no ciphertext), in addition to the reconciliation grants of `deployment.md` 2.1: `SELECT (player_id)` on `secret_codes`, `guesses` and `idempotency_keys`, `SELECT (game_id)` on `token_rotations`, `SELECT (id, game_id)` on `players`, `SELECT (id, state, expires_at)` and `UPDATE (expires_at)` on `games`. The restore procedure runs the reconciliation twice: before `keyverify`, and again after the new key is activated and any staged key is abandoned. Offline activation never runs while any reader is live. When a key is retired (removed from the ring), `keys:retire` removes it from `required_key_ids` under the ring lock. Online activation never accepts `--offline`. Both run under the ring single-writer lock.
 
 **Privileges.** The application role (used by `app`, `cleanup` and `reencrypt`) has `SELECT`, `INSERT`, `UPDATE` and `DELETE` on `instance_ring_reports`, and `SELECT` on `ring_state` for its admission check. The upsert reads columns through `EXCLUDED`, and cleanup's `DELETE` reads `reported_at`. The `keymgmt` role has `SELECT` on `instance_ring_reports` and `SELECT` and `UPDATE` on `ring_state`. The `keyverify` role has `SELECT` on `ring_state` for its admission check (CR-19). `pg_locks` is readable by every role, and advisory locks need no table privilege.
 
@@ -510,11 +541,26 @@ WHERE g.id = batch.id
   AND g.expires_at <= clock_timestamp()   -- re-check on the locked row
 RETURNING g.id;
 
--- Maintenance statements, run once per cleanup run:
-UPDATE token_rotations
+-- Maintenance statements. Replay ciphertext maintenance is its own loop of separately committed batches (see Bounded work).
+-- Replay ciphertext is cleared per batch of owning games. The game row is locked first, so a rotation retry
+-- that holds the lock and is inside its window is never cleared under it, then replay_until is re-checked (C6).
+WITH batch AS (
+  SELECT g.id
+  FROM games g
+  WHERE EXISTS (SELECT 1 FROM token_rotations t
+                WHERE t.game_id = g.id AND t.token_ciphertext IS NOT NULL AND t.replay_until <= clock_timestamp())
+  ORDER BY g.id
+  LIMIT $1                       -- CLEANUP_BATCH_SIZE
+  FOR UPDATE OF g SKIP LOCKED
+)
+UPDATE token_rotations t
 SET token_ciphertext = NULL, token_key_id = NULL
-WHERE token_ciphertext IS NOT NULL AND replay_until <= clock_timestamp();
+FROM batch
+WHERE t.game_id = batch.id
+  AND t.token_ciphertext IS NOT NULL
+  AND t.replay_until <= clock_timestamp();   -- re-check on the locked game. The loop stops when this updates no rows
 
+-- Rate-limit and presence-report pruning, once per run:
 DELETE FROM rate_limits
 WHERE ctid IN (SELECT ctid FROM rate_limits
                WHERE refilled_at < clock_timestamp() - interval '1 hour'
@@ -534,6 +580,7 @@ Properties:
 - **Concurrent with live traffic.** Live requests hold `FOR UPDATE` on the game row. `SKIP LOCKED` leaves in-flight games to a later run. A game refreshed between selection and deletion fails the re-check. Each live request decides expiry under its own lock, so a request cannot succeed on a game that cleanup could delete.
 - **Concurrent with itself.** Two runs lock disjoint rows because of `SKIP LOCKED`.
 - **Bounded work.** Loop batches until a batch deletes fewer rows than the batch size, then report the total.
+- **Replay ciphertext maintenance has its own loop.** After the expired-game loop, the maintenance statement above runs repeatedly, each batch its own transaction and commit, until a batch updates no rows. The loop is not bounded by the number of expired-game deletions, so more than `CLEANUP_BATCH_SIZE` eligible games are all cleared in one run when none is locked. A game skipped because another transaction locks it (`SKIP LOCKED`) keeps its ciphertext until a later run retries it. Locked games are not selected, so when only locked games remain the next batch updates no rows and the loop ends. Those games are retried on a later run. The loop never decrypts.
 - **Dry run.** `--dry-run` runs `SELECT count(*)` with the same predicate and deletes nothing.
 - **Logging.** Only counts and durations (R11.8).
 
@@ -559,6 +606,6 @@ Backups retain deleted data until they age out (35 days maximum, R11.9). After a
 - Applied files are immutable. CI rejects edits to existing migration files.
 - Forward-only. Reversal is a new migration or a restore from backup. Take a backup before applying migrations in production.
 - Migrations run as a one-shot step before the application starts (`deployment.md`). The application refuses to start if the database version is older than the version it expects.
-- Compatible changes (add column with default, add table, add index concurrently) are preferred so old and new application instances can overlap during a rolling restart.
+- Compatible changes (add column with default, add table, add a plain index on a small or new table) are preferred. `CREATE INDEX CONCURRENTLY` is not a supported migration: it cannot run inside a transaction and the runner applies every file in one. An index that must be built online needs a separate, documented, owner-approved procedure outside the runner so old and new application instances can overlap during a rolling restart.
 - No encryption keys or key material appear in migrations (R10.3).
 - CI applies all migrations to an empty database and runs the schema tests (`test-strategy.md`, TS-DB).

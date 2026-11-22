@@ -61,7 +61,7 @@ duocode/
 │   │   ├── http/                   Oak apps (public and admin), routes, middleware, validation
 │   │   ├── config/                 typed configuration
 │   │   ├── tasks/                  cleanup, reencrypt, keys:generate, keys:activate, keys:seal,
-│   │   │                           keys:abandon, keys:retire, keys:reconcile-gate, keys:verify
+│   │   │                           keys:abandon, keys:retire, keys:reconcile-gate, keys:prune-accepted-loss, keys:verify
 │   │   └── main.ts
 │   └── tests/                      unit, engine, reference, integration, security, concurrency
 ├── tools/
@@ -122,7 +122,7 @@ One function, `authorise(tx, token, expectedType, gameId?, options)`, owned by t
 
 **Three distinct steps, never conflated:**
 
-1. **Preliminary lookup (non-authoritative).** Before any transaction, the service looks the token hash up once. The result grants nothing. It is used only to (a) reject tokens that do not exist, so random tokens never reach rate-limit storage or the transaction, and (b) find the player id for the player rate-limit subject. It may be stale by the time the transaction begins.
+1. **Preliminary lookup (non-authoritative).** Before any transaction, and after the `ip:authfail` bucket-availability check (section 11), the service looks the token hash up once. The result grants nothing. It is used only to (a) reject tokens that do not exist or are already known to be revoked (a rotation request with a revoked token is not rejected at once: it first gets the read-only replay check, and is rejected with `401` before any player bucket is charged unless it is a known replay, RD-20, RD-22), so random tokens never reach player rate-limit storage or the transaction, and (b) find the player id for the player rate-limit subject. It may be stale by the time the transaction begins.
 2. **Rate-limit updates.** Each is a short autocommit transaction, run before the request transaction begins (section 11). No lock from it is held afterwards.
 3. **Authoritative validation.** `authorise` reads the reference time once with `clock_timestamp()`, runs the lookup in `database-schema.md` section 4 and returns an authorised principal (credential id, player id, game id, seat) or `INVALID_CREDENTIALS` or `GAME_EXPIRED`. Expiry is `reference time >= expires_at`. This is the only step that can grant access.
 
@@ -130,7 +130,7 @@ One function, `authorise(tx, token, expectedType, gameId?, options)`, owned by t
 - **Writes:** begin the transaction, lock the game row, call `authorise`. The decision is made with the lock held and so reflects every committed rotation or revocation. For operations that carry no game id (`createRematch`), the preliminary lookup supplies the game, the service locks it, and `authorise` runs under the lock. Only that result counts.
 - **Reads:** begin a read-only `REPEATABLE READ` transaction and call `authorise` as its first statement. Every later read in the transaction sees the same snapshot, so the decision and the data are consistent. No game lock is taken, so reads never block writers (R8.12, `state-machine.md` section 1.4).
 
-**Consistency with revocation.** A revocation committed before step 3 starts is seen by step 3 and fails the request, whatever steps 1 and 2 said. A revocation that commits after a read's snapshot is taken is ordered after that read. The rate-limit update never changes any credential state. A token revoked after step 1 that still consumed a bucket token is harmless.
+**Consistency with revocation.** A revocation committed before step 3 starts is seen by step 3 and fails the request, whatever steps 1 and 2 said. A revocation that commits after a read's snapshot is taken is ordered after that read. The rate-limit update never changes any credential state. A token revoked after step 1 that still consumed a bucket token is harmless. Failure accounting for `ip:authfail` happens outside the transaction, after rollback (section 11).
 
 - The HTTP layer only extracts the bearer token (or the invitation from the body) and validates the header format. It does not decide anything.
 - **Rotation replay:** `authorise` is given the option `allowRotationReplay` by the rotation operation only. Every other operation treats a revoked token as `INVALID_CREDENTIALS`. The replay does not change any stored credential (R8.13).
@@ -142,7 +142,7 @@ Rotation requires an `Idempotency-Key` that is a version 4 UUID from a cryptogra
 
 1. Under the game lock: create the new access token, revoke the old one (reason `ROTATED`), revoke the player's unused rematch capability (`ROTATION_SIDE_EFFECT`, RD-12), and insert a `token_rotations` row. All in one transaction.
 2. The row holds the fingerprint of the request and the new token encrypted with AES-256-GCM under the key ring (AAD: purpose, key id, game id, player id, rotation id). It also holds `replay_until = reference time + ROTATION_REPLAY_SECONDS` (default 600, approved RD-3).
-3. A retry with the same old token and the same key, inside the window and while the new token is still live, returns the original response: the same new token, flagged as a replay. The replay changes no state and does not reactivate the old token. After the window the ciphertext is cleared by cleanup and the replay rule no longer applies.
+3. A retry with the same old token and the same key, inside the window and while the new token is still live, returns the original response: the same new token, flagged as a replay. The replay changes no state and does not reactivate the old token. A validated replay (old token, version 4 key and fingerprint all match) is exempt from the `pl:rotate` bucket (RD-18) when the read-only check made before charging finds it. Two identical requests arriving at the same moment may both be charged, and the one that finds the replay inside the transaction is already charged (RD-22). A lost response cannot exhaust the bucket that its own retry needs. After the window the ciphertext is cleared by cleanup and the replay rule no longer applies.
 4. The security consequences are in `security-assessment.md` section 2.2. They are bounded by: the replay needs both the old token and the key, the key has 122 random bits, the window is short, the stored value is encrypted, and replay changes no state.
 5. Losing the replacement token after the window means losing the seat (R8.9, `state-machine.md` section 3.1).
 
@@ -190,7 +190,7 @@ Every authenticated state-changing use case has this fixed shape:
 
 1. Validate the request (body, path, headers, nickname, idempotency key format). No database work.
 2. Preliminary credential lookup (non-authoritative, section 5.1 step 1).
-3. Rate-limit updates, each in its own short autocommit transaction (section 11). Then, for an operation that may encrypt, the claim of units (reserving first if the allowance is short), and **after that, as the last step before `BEGIN`, the pre-encryption check** (section 9.1). If the check fails the claim is returned. All of this happens before `BEGIN`. A rate-limit failure fails the request closed with `503`. A failure to obtain units is deferred to the point a fresh encryption is needed (section 9.1), still before anything is written.
+3. Rate-limit updates, each in its own short autocommit transaction (section 11). The `ip:authfail` availability check comes first and failure accounting follows the sequence in section 11 (outside the transaction, after rollback). Then, for an operation that may encrypt, the claim of units (reserving first if the allowance is short), and **after that, as the last step before `BEGIN`, the pre-encryption check** (section 9.1). If the check fails the claim is returned. All of this happens before `BEGIN`. A rate-limit failure fails the request closed with `503`. A failure to obtain units is deferred to the point a fresh encryption is needed (section 9.1), still before anything is written.
 4. `BEGIN` at `READ COMMITTED`. Set `lock_timeout` (default 5 s) and `statement_timeout` (default 10 s) for the transaction.
 5. `SELECT … FROM games WHERE id = $1 FOR UPDATE` on the game addressed by the request.
 6. `authorise` (section 5.1 step 3).
@@ -293,7 +293,7 @@ The full specification, with the statements, the guarantees G1 to G8 and the thr
 
 - Bodies are parsed once. Duplicate member names are rejected as `INVALID_REQUEST`. Unknown members are rejected.
 - The envelope `{"operation": name, "gameId": lowercase uuid, "body": parsed body}` is serialised with RFC 8785 JCS. Bodies in this API contain only integers, strings, arrays and objects, so JCS reduces to sorted member names, no insignificant whitespace, ES6 number formatting and minimal string escaping. A small implementation is acceptable if it passes the RFC 8785 test vectors and the property tests in `test-strategy.md` (TS-IDEM). A vetted library may replace it.
-- Guess fingerprint: `HMAC-SHA-256(HKDF(key[kid], "duocode/fingerprint/v1"), JCS(envelope))` with `kid` stored in `fingerprint_key_id`.
+- Guess fingerprint: `HMAC-SHA-256(HKDF(key[kid], "duocode/mac/v1"), JCS(envelope))` with `kid` stored in `fingerprint_key_id`.
 - Rotation fingerprint: SHA-256 of JCS of `{"operation":"rotateAccessToken","gameId":…,"body":{"fromCredentialId":…}}`. It contains no secret that can be enumerated. The rotation key itself must be a version 4 UUID (R8.13). The guess key may be any UUID version (R5.1). Both are validated by format only.
 - Equal canonical bodies give equal fingerprints. Any difference in a symbol, in operation or in game changes it.
 
@@ -311,9 +311,9 @@ Two layers. In-memory limits are not used as a control because instances do not 
 | Hash of the player id (CH-4) | After the preliminary credential lookup finds the credential, before the request transaction | `pl:guess`, `pl:rotate`, `pl:mint`, `pl:read`, `pl:write` |
 
 - **Sequence.** Validate, preliminary credential lookup (grants nothing), rate-limit updates in separate autocommit statements, then the request transaction with the authoritative credential check. Rate limiting therefore never holds a lock together with a game lock, and never decides credential validity (R20.9, R8.12).
-- A failed credential check, including an invalid invitation or a token the preliminary lookup did not find, consumes from `ip:authfail`. When that bucket is empty the request is rejected with `429` before any credential lookup, which throttles token guessing.
+- **`ip:authfail` sequence (one rule, used here, in 5.1, in 8.1 and in `deployment.md` 4.2).** (1) Check that the `ip:authfail` bucket has a token available. When it is empty the request is rejected with `429` before any credential lookup, which throttles token guessing. (2) Run the preliminary lookup. (3) A failure the preliminary lookup decides (a token it did not find, or one it knows to be revoked, except on a rotation request, which first gets the read-only replay check because it may be a known replay; if it is not one, it is rejected here with no player bucket charged and counted to `ip:authfail` only, RD-20, RD-22) is charged to `ip:authfail` at once and the request ends with `INVALID_CREDENTIALS`. It skips the player buckets and the game transaction. (4) A failure decided by authoritative validation (including an invalid invitation) is charged to `ip:authfail` **outside** the game transaction, **after** the rollback, as its own autocommit statement. No bucket statement runs inside the game transaction.
 - Player buckets apply only after the preliminary lookup finds a credential, so a flood of random tokens cannot create bucket rows. Random tokens are limited by `ip:authfail` and Caddy.
-- The player subject is the player id, not the credential id, so rotating a token does not reset the limits. A holder of an old revoked token can consume the player's bucket until it empties: this is a small denial-of-service on a player who already lost control of an old token, bounded by the bucket refill.
+- The player subject is the player id, not the credential id, so rotating a token does not reset the limits. A token the preliminary lookup already knows to be revoked is rejected before any player bucket is charged (RD-20), except a rotation request, which first gets the read-only replay check and is rejected with `401` before any player bucket is charged unless it is a known replay. A rotation request is charged to `pl:rotate` before its transaction, like every other limited operation, unless a read-only check made before charging shows a known replay, which is never charged (RD-18, RD-22, `state-machine.md` section 3.1). The residual is a token revoked between the preliminary lookup and the transaction.
 - The client IP comes from the proxy's `X-Forwarded-For` only when the connection comes from `TRUSTED_PROXY_CIDRS`. Otherwise the socket address is used (RD-9).
 - If a bucket statement fails, the request is rejected with `503` (RD-2).
 - A denial returns `429 RATE_LIMITED` with `Retry-After`.
@@ -340,7 +340,7 @@ All keys are read at start-up, validated, and failure is fatal. Defaults are the
 | `RATE_LIMIT_HMAC_KEY_FILE` | `/run/secrets/duocode_ratelimit_key` | Secret for IP subject HMAC (RD-9). Not backed up (CH-2) |
 | `TRUSTED_PROXY_CIDRS` | none (required in production) | Addresses whose `X-Forwarded-For` is trusted |
 | `ADMIN_TOKEN_SHA256` | none (required in production) | Hex SHA-256 of the admin token |
-| `ADMIN_LISTEN_ADDR` | `127.0.0.1:8081` | Admin listener, never published |
+| `ADMIN_LISTEN_ADDR` | none (required in production) | Admin listener address: the `app` address on the internal network and port 8081. Never loopback, never all interfaces (`0.0.0.0`), never published (RD-17) |
 | `TTL_UNJOINED_DAYS` | `7` | Unjoined retention |
 | `TTL_IN_PROGRESS_DAYS` | `30` | In-progress retention |
 | `TTL_COMPLETED_DAYS` | `180` | Completed retention |

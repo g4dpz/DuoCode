@@ -189,7 +189,19 @@ signed=re.findall(r'^- \[x\] (1\.[1-6]) ',tk,re.M)
 check(f'C15 only Phase 1 gates are marked done, each with a recorded owner sign-off (signed: {", ".join(signed) or "none"})',pr)
 # 16 baseline constants
 pr=[]
-if 'maxItems: 4' not in files['openapi.yaml']: pr.append('code length not constrained')
+def oa_resolve(node):
+    seen=0
+    while isinstance(node,dict) and '$ref' in node and seen<10:
+        cur=oa
+        for part in node['$ref'].lstrip('#/').split('/'): cur=cur[part]
+        node=cur; seen+=1
+    return node
+if 'Code' not in oa['components']['schemas']: pr.append('schema Code is missing')
+else:
+    cs=oa_resolve({'$ref':'#/components/schemas/Code'})
+    if cs.get('type')!='array' or cs.get('minItems')!=4 or cs.get('maxItems')!=4: pr.append('Code is not an array of exactly 4 items')
+    it=oa_resolve(cs.get('items',{}))
+    if it.get('type')!='integer' or it.get('minimum')!=1 or it.get('maximum')!=6: pr.append('Code items are not integers from 1 to 6')
 check('C16 OpenAPI constrains codes to 4 symbols from 1..6',pr)
 # 17 openapi nickname regex vs db regex
 oan=oa['components']['schemas']['Nickname']['pattern']
@@ -225,9 +237,10 @@ for fn in spec:
 check('C20 no decision recorded as approved in the register is still described as pending elsewhere',pr)
 # 21 no application code, migrations or implementation tasks
 import subprocess
-tracked=subprocess.run(['git','-C',root,'ls-files','-co','--exclude-standard'],capture_output=True,text=True).stdout.split()
+lsf=subprocess.run(['git','-C',root,'ls-files','-co','--exclude-standard'],capture_output=True,text=True)
+tracked=lsf.stdout.split()
 allowed_ext={'.md','.yaml','.yml','.py'}
-pr=[]
+pr=[f'git ls-files failed (exit {lsf.returncode}): {lsf.stderr.strip()[:100]}'] if lsf.returncode!=0 else []
 for f in tracked:
     base=os.path.basename(f); ext=os.path.splitext(f)[1]
     top=f.split('/')[0]
@@ -432,6 +445,137 @@ for p in sorted(have-want): pr.append(f'README layout has {p}, which design.md s
 for stale in ('awaiting owner approval','Caddy or Nginx','subject to owner approval'):
     if stale in rd: pr.append(f'README still says "{stale}"')
 check(f'C30 the README layout lists exactly the approved design.md layout as full paths ({len(want)} paths) and carries no superseded approval statements',pr)
+# 31 invitation error table agrees across documents (task 1.8, A3, B14, C8)
+pr=[]
+for fn in ('requirements.md','security-assessment.md','state-machine.md','copilot-instructions.md','openapi.yaml'):
+    for tok in ('GAME_FULL','INVALID_INVITATION'):
+        if tok not in files[fn]: pr.append(f'{fn} does not mention {tok}')
+for fn in ('requirements.md','security-assessment.md','state-machine.md','copilot-instructions.md'):
+    for i,l in enumerate(files[fn].splitlines(),1):
+        if '401 INVALID_CREDENTIALS' in l and re.search(r'invitation',l,re.I) and not re.search(r'GAME_FULL|INVALID_INVITATION|access and rematch|exception',l):
+            pr.append(f'{fn}:{i}: a 401 rule mentions invitations without the join exceptions')
+jr=oa['paths']['/games/{gameId}/join']['post']['responses']
+if '401' in jr: pr.append('joinGame declares 401')
+for c in ('404','409'):
+    if c not in jr: pr.append(f'joinGame lacks {c}')
+check('C31 the join error exceptions (409 GAME_FULL, 404 INVALID_INVITATION, no blanket 401) agree in requirements, security assessment, state machine, copilot instructions and OpenAPI',pr)
+# 32 HKDF labels agree (task 1.8, B13)
+pr=[]
+labels=set()
+for fn,t in files.items():
+    for l in t.splitlines():
+        if 'HKDF' in l: labels|=set(re.findall(r'duocode/[a-z]+/v\d+',l))   # the other duocode/<name>/v1 strings are AAD domain labels
+if labels!={'duocode/enc/v1','duocode/mac/v1'}: pr.append(f'HKDF labels in use: {sorted(labels)}')
+m1=re.search(r'Guess fingerprint: `HMAC-SHA-256\(HKDF\(key\[kid\], "([^"]+)"\)',files['design.md'])
+m2=re.search(r'`(duocode/[a-z]+/v\d+)` for HMAC fingerprints',files['security-assessment.md'])
+if not m1 or m1.group(1)!='duocode/mac/v1': pr.append('design.md guess fingerprint does not use duocode/mac/v1')
+if not m2 or m2.group(1)!='duocode/mac/v1': pr.append('security-assessment.md fingerprint key does not use duocode/mac/v1')
+check('C32 the HKDF labels (lines that mention HKDF) are duocode/enc/v1 and duocode/mac/v1 only, and the guess fingerprint uses duocode/mac/v1 in design.md and security-assessment.md',pr)
+# 33 every operation with a gameId path parameter declares 400 (task 1.8, C9)
+pr=[]
+for path,item in oa['paths'].items():
+    if '{gameId}' not in path: continue
+    for meth,op in item.items():
+        if meth in ('get','post','put','delete','patch') and '400' not in op.get('responses',{}): pr.append(f"{op['operationId']} lacks 400")
+check('C33 every OpenAPI operation with a gameId path parameter declares 400',pr)
+# 34 CI secret hygiene covers .env.* and exempts only .env.example (task 1.8, B1)
+pr=[]
+hy=[st.get('run','') for j in yaml.safe_load(open(root+'.github/workflows/ci.yml'))['jobs'].values() for st in j.get('steps',[]) if 'git ls-files' in st.get('run','') and 'secrets/' in st.get('run','')]
+hm=re.search(r"grep -E '([^']+)'.*grep -vE '([^']+)'",hy[0]) if hy else None
+if not hm: pr.append('the secret-file step of ci.yml was not found')
+else:
+    flag=lambda n: re.search(hm.group(1),n) and not re.search(hm.group(2),n)
+    for n in ('.env','.env.local','.env.production','app/.env.staging','secrets/key.txt','a.pem','.env.example.bak'):
+        if not flag(n): pr.append(f'{n} is not flagged')
+    if flag('.env.example') or flag('docs/.env.example'): pr.append('.env.example is not exempt')
+check('C34 the CI repository hygiene step flags .env, .env.* and secret files and exempts only .env.example',pr)
+# 35 required merge checks include audit and exist as CI jobs (task 1.8, D13)
+pr=[]
+mm=re.search(r'Merge requires (.*?) to pass',files['test-strategy.md'])
+req_jobs=re.findall(r'`([\w-]+)`',mm.group(1)) if mm else []
+if 'audit' not in req_jobs: pr.append('test-strategy.md required merge checks omit audit')
+cij=yaml.safe_load(open(root+'.github/workflows/ci.yml'))['jobs']
+if 'audit' not in cij: pr.append('ci.yml has no audit job')
+check('C35 the required merge checks in test-strategy.md include audit and ci.yml defines the audit job',pr)
+# 36 pl:rotate replays are exempt everywhere, and R20.3 scopes token buckets to the application layer (task 1.8, RD-16, RD-18)
+pr=[]
+for fn in spec:
+    if fn=='revision-3.1-review-package.md': continue
+    for i,l in enumerate(files[fn].splitlines(),1):
+        if 'pl:rotate' in l and re.search(r'replay',l,re.I) and not re.search(r'exempt|not charged|never charged|uncharged',l,re.I):
+            pr.append(f'{fn}:{i}: pl:rotate and replay without the exemption')
+r203=re.search(r'^3\. (EACH application-layer limit.*)$',req[req.index('### R20:'):],re.M)
+if not r203 or 'sliding-window' not in r203.group(1) or 'not token buckets' not in r203.group(1): pr.append('R20.3 does not scope token buckets to the application layer')
+check('C36 validated pl:rotate replays are described as exempt wherever they are mentioned, and R20.3 limits token buckets to the application layer',pr)
+# 37 to 40 PR #17 review follow-ups (RD-21, replay maintenance loop, simulator secrecy scope, twin rotation charging)
+pr=[]
+ds=files['database-schema.md']; dep=files['deployment.md']
+for fn in ('deployment.md','database-schema.md','security-assessment.md','tasks.md'):
+    if 'RD-21' not in files[fn] and fn!='tasks.md': pr.append(fn+': no mention of RD-21')
+if not re.search(r'^\| RD-21 \|.*expired immediately.*results return an internal error.*keys:verify. accepts',req,re.M): pr.append('requirements.md: RD-21 row missing or incomplete')
+for need in ('acceptedLoss','SET expires_at = now()','idempotency_keys i JOIN players','--accepted-loss'):
+    if need not in ds: pr.append('database-schema.md: missing '+need)
+if '--accepted-loss' not in dep: pr.append('deployment.md: missing --accepted-loss')
+if not re.search(r'in progress is expired at once',dep): pr.append('deployment.md 6.2 does not expire in-progress affected games')
+if '--accepted-loss' not in files['tasks.md'] or 'RD-21' not in files['tasks.md']: pr.append('tasks.md 9.2a does not define the accepted-loss options')
+for i,l in enumerate(files['security-assessment.md'].splitlines(),1):
+    if 'abandoned games are left to cleanup' in l: pr.append(f'security-assessment.md:{i}: affected games described without immediate expiry')
+check('C37 missing-key recovery (RD-21): decision row, durable record, immediate expiry of in-progress affected games, verifier exclusion list and task 9.2a agree',pr)
+pr=[]
+if re.search(r'Maintenance statements, run once',ds): pr.append('database-schema.md: replay maintenance still described as run once per cleanup run')
+if 'Replay ciphertext maintenance has its own loop' not in ds or 'updates no rows' not in ds: pr.append('database-schema.md: replay maintenance loop not specified')
+if 'separate replay-ciphertext loop' not in files['tasks.md']: pr.append('tasks.md 5.11 lacks the replay maintenance loop test')
+check('C38 replay ciphertext maintenance in cleanup is its own loop of committed batches that stops when no rows are updated',pr)
+pr=[]
+for fn in ('simulator-design.md','test-strategy.md','copilot-instructions.md'):
+    for i,l in enumerate(files[fn].splitlines(),1):
+        if re.search(r"no response[^.|]*opponent'?s guesses",l,re.I) and not re.search(r'except[^.|]*completed `?getResults',l): pr.append(f'{fn}:{i}: opponent guess ban without the completed getResults exception')
+if 'except a completed `getResults`' not in files['simulator-design.md']: pr.append('simulator-design.md: secrecy check lacks the completed getResults exception')
+check('C39 the simulator ban on opponent guesses and feedback exempts completed getResults',pr)
+pr=[]
+sm=files['state-machine.md']
+for need in ('Charging `pl:rotate` for rotation requests (RD-22','read-only replay check','before `BEGIN`','over-charge of one unit is accepted'):
+    if need not in sm: pr.append('state-machine.md: missing '+need)
+# C40 scans sentences, not lines: wrapped text is joined, each sentence is judged with the one before it
+# (so "It is charged to pl:rotate. The charge is refunded." is caught), and only a negation inside the
+# offending sentence itself exempts it.
+c40_bad=re.compile(r'refund|credit(?:ed|s)? back|post-?commit|\b(?:after|once|when|as soon as)\b[^.;]{0,40}\bcommit(?:s|ted)?\b|after the (?:commit|rotation)|only checks that|issued after|charged once,? after|charge of a rotation that has',re.I)
+c40_ok=re.compile(r'no charge after|none after|\bno refund|\bnot refund|\bnever refund|\bwithout (?:a )?refund|replaces the round-2|round-2 (?:text|charge)|no `pl:rotate` statement runs after|is not charged|never charged',re.I)
+def c40_sentences(text):
+    out=[];buf=[]
+    def flush():
+        if buf:
+            joined=' '.join(buf);buf.clear()
+            out.extend(x for x in re.split(r'(?<=[.;:?!])\s+(?=[A-Z`(\d*])',joined) if x.strip())
+    for l in text.splitlines():
+        t=l.strip()
+        if not t: flush();continue
+        if t.startswith(('|','#','- ','* ')) or re.match(r'\d+\. ',t): flush()
+        if t.startswith('|'): out.extend(x for x in re.split(r'(?<=[.;?!])\s+(?=[A-Z`(\d*])',t) if x.strip());continue
+        buf.append(t)
+    flush();return out
+def c40_scan(fn,text):
+    res=[];prev=''
+    for sent in c40_sentences(text):
+        if c40_bad.search(sent) and ('pl:rotate' in sent or 'pl:rotate' in prev) and not c40_ok.search(sent): res.append(f'{fn}: post-commit or refund charging wording for pl:rotate: {sent[:90]}')
+        prev=sent
+    return res
+for fn in ('state-machine.md','deployment.md','design.md','requirements.md','security-assessment.md','test-strategy.md','revision-3.1-review-package.md','tasks.md'):
+    pr.extend(c40_scan(fn,files[fn]))
+if 'Twin rotations' not in files['test-strategy.md'] or 'TS-CONC-30' not in files['test-strategy.md']: pr.append('test-strategy.md: no twin rotation test or TS-CONC-30')
+if 'before its transaction' not in dep: pr.append('deployment.md: no pl:rotate charge-before-transaction rule')
+check('C40 pl:rotate is charged before the rotation transaction (RD-22), a known replay is found by a read-only check first, and no post-commit charge or refund wording remains',pr)
+pr=[]
+reqt=files['requirements.md']
+for n in ('RD-22','RD-23','RD-24'):
+    if not re.search(r'^\| '+n+r' \|.*i accept your recommendations',reqt,re.M): pr.append('requirements.md: '+n+' row missing or without owner statement')
+    if not re.search(r'^\| '+n+r' \|',files['traceability.md'],re.M): pr.append('traceability.md: no decision map row '+n)
+if 'keys:prune-accepted-loss' not in files['tasks.md'] or 'keys:prune-accepted-loss' not in dep or 'keys:prune-accepted-loss' not in files['database-schema.md']: pr.append('keys:prune-accepted-loss not defined in tasks.md, deployment.md and database-schema.md')
+if not re.search(r'`reencrypt` skips[^.]*accepted|skipped, as a count only',files['security-assessment.md']+files['database-schema.md']): pr.append('reencrypt skip rule (RD-24) missing')
+for g in ('1.1','1.2','1.4','1.5'):
+    m=re.search(r'- \[x\] '+re.escape(g)+r' .*?(?=\n- \[)',files['tasks.md'],re.S)
+    if not m or 'RD-24' not in m.group(0) and g in ('1.1','1.4','1.5') or 'Awaiting an explicit owner confirmation' not in m.group(0): pr.append('tasks.md '+g+': reopened entry does not cover RD-22 to RD-24')
+check('C41 RD-22 to RD-24 are recorded with the owner statement, mapped, and carried into the reopened gate entries (RD-23 prune command, RD-24 reencrypt skip)',pr)
 # 22 OpenAPI lint
 import shutil as _sh
 if _sh.which('npx'):

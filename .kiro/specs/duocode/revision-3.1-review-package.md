@@ -2,18 +2,20 @@
 
 History: the revision 3.1 content was published on `spec/revision-3.1-review` and merged to `main` (PR #1, `b88580d`). The strict hard-stop correction (CR-9, section 3A) is on branch `spec/key-usage-strict-hard-stop`, created from that `main`. Commit hashes are reported with the branches, because a file cannot contain its own commit hash.
 
-The project stays in specification and approval mode. This package contains no application code, no database migration and no implementation task. **All six gates are signed off. Gate 2's reopened sentence in `design.md` section 16 was re-confirmed the same day (see `tasks.md` 1.2). Task 1.9 (Phase 1 complete) is not.** The architecture (Deno, TypeScript, Oak, PostgreSQL, Docker Compose, Caddy) is unchanged.
+The project stays in specification and approval mode. This package contains no application code, no database migration and no implementation task. **All six gates are signed off. Gate 2's reopened sentence in `design.md` section 16 was re-confirmed the same day (see `tasks.md` 1.2). Task 1.9 (Phase 1 complete) is not. The task 1.8 fixes (CR-25, section 3C) reopened parts of Gates 1 to 5, which are awaiting owner confirmation. Task 1.7 is confirmed (2026-11-22). Task 1.8 awaits the owner marking it complete.** The architecture (Deno, TypeScript, Oak, PostgreSQL, Docker Compose, Caddy) is unchanged.
 
 ## 1. Gate status
 
 | Gate | Task | Subject | Status |
 |---|---|---|---|
-| 1 | 1.1 | Requirements | **Signed off 2026-11-22**, David Johnson (G4DPZ), as at `53c46df`. R19 licensing text approved at Gate 6 |
-| 2 | 1.2 | Architecture | **Signed off 2026-11-22**, David Johnson (G4DPZ), as at `bcba9f6`, as written (online rotation kept). OI-1 and OI-2 open. CR-24 command-list wording in `deployment.md` 2.1 and 6.3 and `design.md` section 3 **re-confirmed 2026-11-22**. The `design.md` section 16 status sentence **re-confirmed 2026-11-22** |
-| 3 | 1.3 | OpenAPI specification | **Signed off 2026-11-22**, David Johnson (G4DPZ), as `openapi.yaml` draft 6 (CR-22: `500`/`503` on every operation, `429` on admin) |
-| 4 | 1.4 | Database schema and state machine | **Signed off 2026-11-22**, David Johnson (G4DPZ), schema as at `e9c01eb`, state machine with CR-23 (write order includes the claim, pre-encryption check and commit-time check) |
-| 5 | 1.5 | Security assessment | **Signed off 2026-11-22**, David Johnson (G4DPZ), `security-assessment.md` and `test-strategy.md` at `cbc43bf` plus the alignment fixes in CR-24 (threats T1 to T39) |
+| 1 | 1.1 | Requirements | **Signed off 2026-11-22**, David Johnson (G4DPZ), as at `53c46df`. R19 licensing text approved at Gate 6. CR-25 reopened R8.8, R10.7, R10.14, R20.3, RD-16 to RD-24 and the `traceability.md` decision map: awaiting owner confirmation |
+| 2 | 1.2 | Architecture | **Signed off 2026-11-22**, David Johnson (G4DPZ), as at `bcba9f6`, as written (online rotation kept). OI-1 and OI-2 open. CR-24 command-list wording in `deployment.md` 2.1 and 6.3 and `design.md` section 3 **re-confirmed 2026-11-22**. The `design.md` section 16 status sentence **re-confirmed 2026-11-22**; CR-25 reopened `design.md` and `deployment.md` parts (section 3C): awaiting owner confirmation |
+| 3 | 1.3 | OpenAPI specification | **Signed off 2026-11-22**, David Johnson (G4DPZ), as `openapi.yaml` draft 6 (CR-22: `500`/`503` on every operation, `429` on admin); CR-25 reopened `400` on four operations and the nickname input schema: awaiting owner confirmation |
+| 4 | 1.4 | Database schema and state machine | **Signed off 2026-11-22**, David Johnson (G4DPZ), schema as at `e9c01eb`, state machine with CR-23 (write order includes the claim, pre-encryption check and commit-time check); CR-25 reopened `database-schema.md` and `state-machine.md` parts: awaiting owner confirmation |
+| 5 | 1.5 | Security assessment | **Signed off 2026-11-22**, David Johnson (G4DPZ), `security-assessment.md` and `test-strategy.md` at `cbc43bf` plus the alignment fixes in CR-24 (threats T1 to T39); CR-25 reopened `security-assessment.md`, `test-strategy.md` and `simulator-design.md` parts: awaiting owner confirmation |
 | 6 | 1.6 | Licensing files and contributor arrangements | **Signed off 2026-11-22**, David Johnson (G4DPZ). LI-1, LI-2 and LI-4 given; LI-3 (legal review) outstanding |
+| Prerequisite | 1.7 | README confirmed | **Done 2026-11-22**, David Johnson (G4DPZ), "merge 9 and confirm 1.7" |
+| Prerequisite | 1.8 | Copilot review of the specification | Findings fixed (section 3C). Awaits the owner marking it complete |
 | Sign-off | 1.9 | Phase 1 complete, Phase 2 authorised | Not authorised |
 
 ## 2. What to read for each gate
@@ -238,11 +240,99 @@ No inline findings. Copilot marked the PR "Needs a closer look" and named two co
 | 1 | Recovery can fail before migrations run | **Real defect, fixed.** Migrations ran at step 7 of the restore, after steps that use `ring_state`, `instance_ring_reports` and the newer `key_usage` columns. They now run at step 3, straight after the database is restored. The later steps are renumbered and their cross-references updated |
 | 2 | A key could be activated while a reader lacks it | **Not reproduced from the specification, deferred.** Copilot gave no path. Recorded as task 9.6a, to be settled against the real tooling, starting with the window between a reader taking its presence lock and completing its admission check |
 
+## 3C. Task 1.8 whole-specification review (Copilot, PRs #12 to #16, snapshot 732d4fb)
+Copilot reviewed the whole specification in five group PRs (#12 to #16) against snapshot `732d4fb`: 52 inline findings. The triage is in the task record (`triage.md`). All 52 are listed below. The changes are CR-25 in `requirements.md`. Gates 1 to 5 are reopened for the changed parts only, and those parts are awaiting owner confirmation (`tasks.md` 1.1 to 1.5). Gate 6 is untouched (`LICENSE`, `NOTICE` and `CONTRIBUTING.md` unchanged). Task 1.8 awaits the owner marking it complete.
+Copilot review of the final PR #17 commit `2aae5ed` (the four final wording fixes) was skipped by owner decision (David Johnson, 2026-11-22): Copilot replied that it was unable to review for insufficient remaining quota. It is carried as task 9.6b in `tasks.md`.
+
+**Deferral record (owner decision, David Johnson (G4DPZ), 2026-11-22, statement "go ahead and defer any further findings to phase 9").** The Copilot round on `2aae5ed` raised no findings, so no finding moved to Phase 9 and no Phase 9 item was added for findings. The only Phase 9 item from this round is task 9.6b (the skipped review itself). No review thread was left open for deferral. The gate parts reopened under tasks 1.1 to 1.5 stay awaiting an explicit owner confirmation.
+
+| ID | Where | Disposition | Where fixed |
+|---|---|---|---|
+| A1 | `copilot-instructions.md:21` | Fixed in CR-25 | `.github/copilot-instructions.md`: decrypted-value ban limited to logs, diagnostics, errors and non-contract responses |
+| A2 | `copilot-instructions.md:25` | Fixed in CR-25 | `.github/copilot-instructions.md`: lossless-restore exception restored |
+| A3 | `requirements.md:306` | Fixed in CR-25 | `requirements.md` R8.8: join exceptions `GAME_FULL`, `INVALID_INVITATION` |
+| A4 | `requirements.md:334` | Fixed in CR-25 | `requirements.md` R10.7: API-path scope, controlled maintenance decryption |
+| A5 | `requirements.md:353` | Fixed in CR-25 | `requirements.md` R10.14: online rotation separate from the offline restore |
+| A6 | `requirements.md:441` | Fixed by owner decision RD-16 | `requirements.md` R20.3: token buckets in the application layer only |
+| A7 | `review package:316` | Fixed in CR-25 | This package: section 5.3 labelled historical, current run in 5.3a |
+| A8 | `traceability.md:32` | Fixed in CR-25 | `traceability.md` R10: `getHealth` (readiness), `getMetrics` (key usage state) |
+| A9 | `README.md:163` | Fixed in CR-25 | `README.md`: roadmap stages versus `tasks.md` phases |
+| A10 | `README.md:219` | Fixed in CR-25 | `README.md`: simulator example has `--test-deployment` |
+| B1 | `ci.yml:51` | Fixed in CR-25 | `ci.yml` hygiene regex covers `.env.*`, exempts `.env.example` |
+| B2 | `ci.yml:119` | Deferred to task 2.5 | `tasks.md` 2.5 |
+| B3 | `ci.yml:120` | Deferred to task 2.5 | `tasks.md` 2.5 |
+| B4 | `deployment.md:29` | Fixed by owner decision RD-17 | `deployment.md` 1, `design.md` 13 (admin listener on the internal network interface) |
+| B5 | `deployment.md:146` | Fixed in CR-25 | `deployment.md` 4.3: `modules/standard` import |
+| B6 | `deployment.md:236` | Fixed in CR-25 | `deployment.md` 6.4: metadata only, no ring entry printed |
+| B7 | `ci.yml:78` | Deferred to task 2.6 | `tasks.md` 2.6 |
+| B8 | `deployment.md:118` | Fixed by owner decision RD-18 | `deployment.md` 4.2, `state-machine.md` 3.1, `design.md` (validated replays exempt from `pl:rotate`) |
+| B9 | `deployment.md:222` | Fixed by owner decision RD-19 | `deployment.md` 6.2, `database-schema.md`, `security-assessment.md` (offline missing-key recovery) |
+| B10 | `deployment.md:270` | Fixed in CR-25 | `deployment.md` 7: alerts from reserved totals |
+| B11 | `design.md:125` | Fixed in CR-25 | `design.md` 5.1, 8.1, 11 and `deployment.md`: one `ip:authfail` sequence |
+| B12 | `deployment.md:87` | Fixed in CR-25 | `deployment.md` 4.1: route templates only in proxy logs |
+| B13 | `design.md:296` | Fixed in CR-25 | `design.md` 10: HKDF label `duocode/mac/v1` |
+| B14 | `security-assessment.md:32` | Fixed in CR-25 | `security-assessment.md`: invitation errors as in R8.8 |
+| C1 | `database-schema.md:113` | Fixed in CR-25 | `database-schema.md`: composite foreign key on `idempotency_keys`; schema test |
+| C2 | `database-schema.md:127` | Fixed in CR-25 | `database-schema.md`: composite foreign keys on `token_rotations`; schema test |
+| C3 | `database-schema.md:401` | Fixed in CR-25 | `database-schema.md`: previous presence report deleted on lock acquisition |
+| C4 | `database-schema.md:468` | Fixed in CR-25 | `database-schema.md`, `deployment.md` 2.1: reconciliation covers `idempotency_keys.fingerprint_key_id`; schema test |
+| C5 | `database-schema.md:562` | Fixed in CR-25 | `database-schema.md`: `CREATE INDEX CONCURRENTLY` not supported by the migration runner |
+| C6 | `database-schema.md:516` | Fixed in CR-25 | `database-schema.md` 7: batch cleanup locks games `FOR UPDATE SKIP LOCKED`, then rechecks `replay_until`; schema test |
+| C7 | `state-machine.md:58` | Fixed by owner decision RD-20 | `state-machine.md` 3, `design.md`, `security-assessment.md` T28 (revoked tokens rejected before player buckets) |
+| C8 | `state-machine.md:75` | Fixed in CR-25 | `state-machine.md`: consumed invitation maps to `GAME_FULL` |
+| C9 | `openapi.yaml:184` | Fixed in CR-25 | `openapi.yaml`: `400` on four operations; check C33 |
+| C10 | `openapi.yaml:613` | Fixed in CR-25 | `openapi.yaml`: `NicknameInput` without length or pattern |
+| C11 | `state-machine.md:93` | Fixed in CR-25 | `state-machine.md`: ordering relative to the snapshot at the first data statement |
+| C12 | `state-machine.md:182` | Fixed in CR-25 | `state-machine.md`: API replay refusal versus later cleanup |
+| D1 | `check-consistency.py:175` | Done (`f7658ed`) | Ticked 1.9 accepted by C15 and C21 |
+| D2 | `check-consistency.py:193` | Fixed in CR-25 | `check-consistency.py` C16 inspects the Code schema |
+| D3 | `check-consistency.py:228` | Fixed in CR-25 | `check-consistency.py` C21 checks the `git` exit status |
+| D4 | `simulator-design.md:59` | Fixed in CR-25 | `simulator-design.md`: pair of responses checked |
+| D5 | `simulator-design.md:65` | Fixed in CR-25 | `simulator-design.md`: `401 INVALID_CREDENTIALS` for the consumed capability |
+| D6 | `simulator-design.md:116` | Fixed in CR-25 | `simulator-design.md` 9, `ci.yml`: `--lost-rotation-rate 0.5`, `--test-deployment` |
+| D7 | `test-strategy.md:98` | Fixed in CR-25 | `test-strategy.md`: no `pl:*` rows, `ip:authfail` charged |
+| D8 | `test-strategy.md:119` | Fixed in CR-25 | `test-strategy.md`: lost-token check scoped to existing seats |
+| D9 | `test-strategy.md:193` | Fixed in CR-25 | `test-strategy.md`: key-id columns readable by reconciliation |
+| D10 | `test-strategy.md:204` | Fixed in CR-25 | `test-strategy.md`, `simulator-design.md`: secrecy scan by field and ownership |
+| D11 | `test-strategy.md:329` | Fixed in CR-25 | `test-strategy.md`: history set frozen before generation |
+| D12 | `test-strategy.md:329` | Fixed in CR-25 | `test-strategy.md`: per-identifier proof |
+| D13 | `test-strategy.md:362` | Fixed in CR-25 | `test-strategy.md` 17: `audit` required; check C35 |
+| E1 | `verify-schema.py:23` | Fixed in CR-25 | `verify-schema.py`: exits under `python -O` |
+| E2 | `verify-schema.py:60` | Fixed in CR-25 | `verify-schema.py`: `stop()` checked before the data directory is touched |
+| E3 | `verify-schema.py:416` | Fixed in CR-25 | `verify-schema.py`: psql helper checks the exit status |
+
+**Owner decisions** (David Johnson (G4DPZ), 2026-11-22, statement "accept the recommendations"): RD-16 (A6) R20.3 applies to the application layer only; RD-17 (B4) the admin listener binds to the internal network interface only; RD-18 (B8) validated rotation replays are exempt from `pl:rotate`; RD-19 (B9) offline missing-key recovery; RD-20 (C7) known-revoked tokens are rejected before player buckets are charged, except rotation requests. Later, on the PR #17 review (statement "accept your recommendations", 2026-11-22): RD-21 (affected games under missing-key recovery, refining RD-19). Then, on the remaining PR #17 threads (statement "i accept your recommendations", 2026-11-22): RD-22 (`pl:rotate` charged before the transaction, refining RD-18), RD-23 (retention of the accepted-loss record, refining RD-21) and RD-24 (`reencrypt` and accepted-loss games).
+**Task 1.7** was confirmed on 2026-11-22 by David Johnson (G4DPZ), statement "merge 9 and confirm 1.7".
+**Copilot review of PR #17 (commit `41ab5e5`, 5 findings) and the PR open questions.** Owner decisions: David Johnson (G4DPZ), 2026-11-22, statement "accept your recommendations". Changes are part of CR-25.
+| # | Where | Disposition | Where fixed |
+|---|---|---|---|
+| 1 | `database-schema.md:476` | Fixed by owner decision RD-21 | `database-schema.md` 6.2a, `deployment.md` 6.2, `security-assessment.md` 3.6: the tool durably records the affected games (lost ciphertext keys and lost fingerprint keys), an in-progress affected game is expired at once, a completed one keeps its outcome and counts and results return an internal error |
+| 2 | `deployment.md:224` | Fixed by owner decision RD-21 | `keys:verify` takes the recorded list (`--accepted-loss`, flag form for task 9.2a), excludes only rows of recorded games under recorded key ids, and must pass for all other data before any reader restarts |
+| 3 | `database-schema.md:521` | Fixed | `database-schema.md` 7: replay ciphertext maintenance is its own loop of separately committed batches, stops when a batch updates no rows, locked games are retried on a later run |
+| 4 | `simulator-design.md:88` | Fixed | The secrecy check bans opponent guesses and feedback in every response except a completed `getResults` |
+| 5 | `state-machine.md:59` | Fixed in `41ab5e5`, reworked by owner decision RD-22 | See the PR #17 rounds 2 and 3 section below |
+Open questions of PR #17: (1) no default for the admin listen address: accepted as written. (2) The flag form of `keys:reconcile-gate` and `keys:verify` stays with task 9.2a, which now also names the accepted-loss options. (3) The D5 reading for rotations: accepted as written. (4) `--lost-rotation-rate 0.5`: accepted. (5) Online index builds: now an explicit item in task 9.4. (6) The wording of RD-17 to RD-20: for the owner, unchanged. (7) Section 4 counts: updated below. (8) A schema test for the C3 `DELETE` on lock acquisition was added, and E1 to E3 and the C4 grant test were mutation-tested (section 5.3a). (9) The C31 heuristic: accepted as written. Still open for the owners: (a) the `keymgmt` column grants added for the accepted-loss run (`deployment.md` 2.1) widen that role's read access to `players` and `games` columns, with no ciphertext, and (b) the wording of RD-17 to RD-21.
+**PR #17 rounds 2 and 3 (head `6383817`): owner decisions RD-22 to RD-24.** David Johnson (G4DPZ), 2026-11-22, statement "i accept your recommendations". Part of CR-25. Gates 1, 2, 4 and 5 stay reopened for the changed parts and await an explicit owner confirmation (`tasks.md` 1.1, 1.2, 1.4, 1.5). Gate 3 is unchanged.
+| Thread | Where | Disposition | Where fixed |
+|---|---|---|---|
+| `state-machine.md:175` (two threads) | `state-machine.md` 3.1 | Fixed by owner decision RD-22. The round-2 text charged a committed rotation after its transaction, which could lose a charge and let one unit serve two rotations (R20.7, RD-2) | `state-machine.md` 3 and 3.1, `deployment.md` 4.2, `design.md` 11, `requirements.md` R20.6 and R20.9, `security-assessment.md` 2.2, `test-strategy.md` TS-CONC-30: a rotation request is charged before its transaction, skipped only for a known replay found by a read-only check. Twin identical requests may both be charged (accepted) |
+| `database-schema.md:488` | `database-schema.md` 6.2a | Fixed by owner decision RD-23 | The key part of the accepted-loss record is permanent. Each game's id and state are removed when the game is deleted, by the new `keymgmt` command `keys:prune-accepted-loss` (`database-schema.md` 6.2a step 5, `deployment.md` 6.2 and 7, `tasks.md` 9.2a) |
+| `database-schema.md:495` | `database-schema.md` 6.2a | Fixed by owner decision RD-24 | `reencrypt` skips recorded games and reports the count. Retiring a lost key does not require them to be re-encrypted (`security-assessment.md` 3.8 and 3.9, TS-CONC-31) |
+**PR #17 round 4 (head `9aaa4e4`): final wording fixes, no new decision.** They apply RD-18, RD-20, RD-21, RD-22 and RD-24 as already approved. Gates 1, 2, 4 and 5 stay reopened and await an explicit owner confirmation (`tasks.md` 1.1, 1.2, 1.4, 1.5). Findings raised by the next Copilot round are recorded as Phase 9 items, not fixed on this branch.
+| Thread or note | Disposition | Where fixed |
+|---|---|---|
+| `state-machine.md:173` (medium) and `security-assessment.md:345` (low) | Fixed (RD-20, RD-22). A rotation request with a revoked token (for example one revoked by the rotation whose response was lost) gets the read-only replay check before any charge. A known replay is answered from the stored replacement token and charged nothing to `pl:rotate`. Any other such request is rejected with `401` before any player bucket is charged, counted to `ip:authfail` only | `state-machine.md` 1.3, 1.4 and 3.1, `deployment.md` 4.2, `design.md` 5.1 and 11, `requirements.md` RD-20, `security-assessment.md` 2.2 and T28 (T28 stays accurate and now says so for rotation requests) |
+| `requirements.md:157` (low) | Fixed (RD-21, RD-24). R10.5, R10.11 and R10.12 exclude games on the accepted-loss record from re-encryption, from the no-references-at-retirement test and from verification, and R10.11 states when a lost key may be retired | `requirements.md` R10.5, R10.11, R10.12, `tasks.md` 1.1 |
+| Reviewer note, `design.md` 145 and RD-18 | Fixed. Both now carry the RD-22 qualification: two identical rotation requests arriving at once may both be charged | `design.md` 5.1, `requirements.md` RD-18 |
+| Reviewer note, C40 | Fixed. C40 joins wrapped lines, judges each sentence with the one before it, and exempts a sentence only by a negation inside that sentence | `check-consistency.py` |
+Implementation consequence for the owners to note, not a further decision: RD-23 needs a way to edit the ring history after a game is deleted, so `keys:prune-accepted-loss` is added to the `keymgmt` command list (task 9.2a). It uses grants the accepted-loss run already has.
+
 ## 4. Files (revision 3.1 branch, for history)
 
 Added: `.kiro/specs/duocode/revision-3.1-review-package.md` (replaces the revision 3 package), `.kiro/specs/duocode/check-consistency.py`, `.kiro/specs/duocode/verify-schema.py`, `CONTRIBUTING.md`, `LICENSE`, `NOTICE`.
 Removed: `.kiro/specs/duocode/revision-3-review-package.md` (superseded).
 Modified: `.github/copilot-instructions.md`, `.kiro/specs/duocode/` (`database-schema.md`, `deployment.md`, `design.md`, `requirements.md`, `security-assessment.md`, `simulator-design.md`, `state-machine.md`, `tasks.md`, `test-strategy.md`, `traceability.md`), `README.md`, `openapi/openapi.yaml`.
+**Task 1.8 fixes (branch `spec/1.8-fixes`, PR #17), actual file list against `main`:** 17 files modified, none added, none removed. Modified: `.github/copilot-instructions.md`, `.github/workflows/ci.yml`, `README.md`, `openapi/openapi.yaml`, and in `.kiro/specs/duocode/`: `check-consistency.py`, `database-schema.md`, `deployment.md`, `design.md`, `requirements.md`, `revision-3.1-review-package.md`, `security-assessment.md`, `simulator-design.md`, `state-machine.md`, `tasks.md`, `test-strategy.md`, `traceability.md`, `verify-schema.py`. `LICENSE`, `NOTICE` and `CONTRIBUTING.md` are unchanged, and no application code or migration exists.
 The two `.py` files are specification tooling (consistency and schema verification). They are not application code or migrations. The branch contains the exact file list in the final report.
 
 ## 5. Verification results (actual output)
@@ -313,6 +403,8 @@ The rest of the 69 tests are the constraint tests (seats, nicknames and bidirect
 
 ### 5.3 Specification consistency checks
 
+Historical, from an earlier snapshot (revision 3.1 at the time of Gate 5 preparation): the transcript below is the 24-check run of that snapshot and is kept for history. The current run is in 5.3a.
+
 `check-consistency.py`, final run on the final file set (24 checks). C24 was checked by mutation: replacing the extracted reservation statement in `verify-schema.py` with a hard-coded one makes C24 fail.
 
 ```
@@ -345,6 +437,57 @@ PASS C22 OpenAPI lint (Redocly): valid with 0 errors and 0 warnings
 
 The checks are textual. They prove that identifiers, references and definitions agree. They cannot prove that the documents are right.
 
+### 5.3a Current run (task 1.8 fixes, branch `spec/1.8-fixes`)
+Run on the branch after the CR-25 changes (the list below is the run at `a5e0dc0`; the PR #17 follow-up run is in 5.3b). `check-consistency.py` (36 checks; C31 to C36 are new, C16 and C21 were hardened):
+```
+PASS C01 every requirement R1..R21 defined and in traceability matrix
+PASS C02 every R<n>.<m> criterion reference exists
+PASS C03 every TS group and TS-CONC id referenced is defined (18 groups, 29 concurrency scenarios)
+PASS C04 every decision ID is defined in the register and none is unknown
+PASS C05 no stale revision 2/3 identifiers or the email signature in the specification, README or licensing files
+PASS C06 every "<file>.md section N" reference resolves to a heading
+PASS C07 design.md API table matches OpenAPI paths and methods (13 operations)
+PASS C08 every error code named anywhere exists in the OpenAPI ErrorCode enum (21 codes)
+PASS C09 game states agree between OpenAPI, database enum and state machine
+PASS C10 every `table.column` reference names a real column (14 tables in the DDL)
+PASS C11 every configuration key named in the specification is in design.md section 13 (25 keys)
+PASS C12 rate-limit scopes agree between design.md and deployment.md
+PASS C13 licensing artefacts present, LICENSE is the FSF AGPL-3.0 text (sha256 0d96a4ff68ad6d4b...), NOTICE names AGPL-3.0-only, and after Gate 6 no draft banner or placeholder remains and NOTICE names the LI-1 holders
+PASS C14 GitHub workflow files parse as YAML
+PASS C15 only Phase 1 gates are marked done, each with a recorded owner sign-off (signed: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6)
+PASS C16 OpenAPI constrains codes to 4 symbols from 1..6
+PASS C17 nickname forbidden character classes agree between OpenAPI and database CHECK (NUL aside)
+PASS C18 OpenAPI rotation key pattern accepts v4 UUIDs and rejects v1 and wrong-variant values
+PASS C19 every decision in the register has a row in the traceability decision map (91 decisions)
+PASS C20 no decision recorded as approved in the register is still described as pending elsewhere
+PASS C21 no application code, database migration or implementation directory exists (only specification, licensing, CI skeleton and the two specification tool scripts)
+PASS C23 key usage design is consistent: one authoritative row per key, CHECK at 2^30, thresholds 2^27 / 2^28 / 2^30, strict statement, terms defined, sharding only mentioned as replaced
+PASS C24 the schema verification tool takes the reservation, registration and sealing statements from database-schema.md
+PASS C25 every OpenAPI operation declares 500 and 503, and admin operations declare 429
+PASS C26 state-machine 1.3 orders claim and pre-encryption check before BEGIN and the commit-time check before COMMIT
+PASS C27 security assessment matches the approved schema and deployment (reservation, restore order, rotation, re-encryption), and every threat maps to test groups
+PASS C28 every key command used in the specification is in the deployment.md 2.1 list, the design layout and task 9.2a (7 commands)
+PASS C29 every heading quoted by name in requirements.md exists
+PASS C30 the README layout lists exactly the approved design.md layout as full paths (34 paths) and carries no superseded approval statements
+PASS C31 the join error exceptions (409 GAME_FULL, 404 INVALID_INVITATION, no blanket 401) agree in requirements, security assessment, state machine, copilot instructions and OpenAPI
+PASS C32 the HKDF labels (lines that mention HKDF) are duocode/enc/v1 and duocode/mac/v1 only, and the guess fingerprint uses duocode/mac/v1 in design.md and security-assessment.md
+PASS C33 every OpenAPI operation with a gameId path parameter declares 400
+PASS C34 the CI repository hygiene step flags .env, .env.* and secret files and exempts only .env.example
+PASS C35 the required merge checks in test-strategy.md include audit and ci.yml defines the audit job
+PASS C36 validated pl:rotate replays are described as exempt wherever they are mentioned, and R20.3 limits token buckets to the application layer
+PASS C22 OpenAPI lint (Redocly): valid with 0 errors and 0 warnings
+
+36 of 36 checks passed (0 skipped)
+```
+Schema verification in Docker `postgres:16`: `71 of 71 tests passed on PostgreSQL 16.16 (Debian 16.16-1.pgdg13+1)` (71 tests; the two new ones cover the C1 and C2 constraints). Redocly lint of `openapi/openapi.yaml`: valid, 0 errors, 0 warnings. `actionlint` on `.github/workflows/ci.yml`: exit 0. The checks are textual and prove agreement of identifiers, references and definitions only.
+### 5.3b PR #17 follow-up run (RD-21)
+`check-consistency.py`: 40 of 40 pass. C37 to C40 are new (RD-21 recovery, replay maintenance loop, simulator secrecy scope, twin rotation charging). Each was mutation-tested: removing the immediate-expiry sentence, restoring the old "left to cleanup" wording, removing `--accepted-loss`, restoring "run once per cleanup run", removing the loop sentence, removing the `getResults` exception, removing the refund statement and removing the twin rotation test each made exactly the matching check fail.
+`verify-schema.py` in Docker `postgres:16`: 73 of 73 tests pass (two new: the C3 presence-report `DELETE` on lock acquisition, and the RD-21 affected-games list, immediate expiry and `keymgmt` column grants). Mutation tests of the tool: `python -O` exits at once with a message (E1). A failing psql session fails its test, and the same mutant passes 73 of 73 when the exit-status check is removed (E3). A failing `pg_ctl stop` raises and exits non-zero (E2). Removing the `idempotency_keys.fingerprint_key_id` grant text from `deployment.md` or the grant itself fails the C4 grant test. Removing the fingerprint branch of the affected-games statement, letting the expiry statement touch completed games, or removing the C3 statement from `database-schema.md` each fail the matching test. Redocly lint was not rerun: `openapi.yaml` did not change in this round.
+
+### 5.3c PR #17 rounds 2 and 3 run (RD-22 to RD-24)
+`check-consistency.py`: 41 of 41 pass. C40 now requires the charge-before-transaction rule and fails on wording of the superseded round-2 rule (late charge or return of a unit). C41 is new (RD-22 to RD-24 rows with the owner statement, decision map rows, `keys:prune-accepted-loss`, the `reencrypt` skip rule, reopened gate entries). Mutation tests: appending a sentence that charges after commit to `state-machine.md` failed C40, and renaming the RD-24 row failed C04, C19 and C41. Both were restored. `verify-schema.py` in Docker `postgres:16`: 73 of 73 pass on PostgreSQL 16.16 (no schema change, `database-schema.md` text only).
+### 5.3d PR #17 round 4 run (final wording fixes)
+`check-consistency.py`: 41 of 41 pass. C40 mutation tests, each appended to a spec file and then restored: a post-commit sentence in `state-machine.md` (fails C40), a refund sentence wrapped over three lines in `deployment.md` (fails C40), "credited back" in a separate sentence in `design.md` (fails C40), a "no refund" sentence followed by a refund sentence in `security-assessment.md` (fails C40), and a list item wrapped over two lines saying the bucket is debited "once it has committed" in `tasks.md` (first version of the guard passed it, the pattern was widened, then fails C40). `verify-schema.py` was not re-run: `database-schema.md` and `verify-schema.py` are unchanged.
 ### 5.4 Not verified, and why
 
 | Item | Reason | How to complete it |
@@ -375,7 +518,7 @@ Inputs given by David Johnson (G4DPZ) on 2026-11-22:
 ## 7. Outstanding issues
 
 1. No technical decision is pending. RD-14 is approved.
-2. Gates 1 (requirements), 2 (architecture), 3 (OpenAPI), 4 (schema and state machine) and 5 (security assessment) are signed off as of 2026-11-22, and Gate 6 (licensing) is signed off with LI-3 outstanding. Task 1.9 awaits your explicit sign-off. Gate 2 was reopened for the CR-24 command-list wording in `deployment.md` 2.1 and 6.3 and `design.md` section 3, and re-confirmed on 2026-11-22. Gate 2's reopened sentence in `design.md` section 16 was re-confirmed the same day (see `tasks.md` 1.2). Operational inputs OI-1 (Caddy build owner) and OI-2 (backup provider) are open.
+2. Gates 1 (requirements), 2 (architecture), 3 (OpenAPI), 4 (schema and state machine) and 5 (security assessment) are signed off as of 2026-11-22, and Gate 6 (licensing) is signed off with LI-3 outstanding. The task 1.8 fixes (CR-25, section 3C) reopened parts of Gates 1 to 5, which are awaiting owner confirmation (`tasks.md` 1.1 to 1.5). Task 1.7 is confirmed. Task 1.8 awaits the owner marking it complete. Task 1.9 awaits your explicit sign-off. Gate 2 was reopened for the CR-24 command-list wording in `deployment.md` 2.1 and 6.3 and `design.md` section 3, and re-confirmed on 2026-11-22. Gate 2's reopened sentence in `design.md` section 16 was re-confirmed the same day (see `tasks.md` 1.2). Operational inputs OI-1 (Caddy build owner) and OI-2 (backup provider) are open.
 3. LI-3, legal review of the contribution terms and the dual-licensing position (section 6). With no separate contributor licence agreement (LI-2), commercial relicensing of outside contributions rests on `CONTRIBUTING.md` section 2 point 2.
 4. The (APP) tests and the restore and rotation drills with real tools (section 5.4).
 5. Proposals approved at Gate 2 (no further approval needed): proxy access logs 14 days with no client IP, backups encrypted to both founders and stored off the VPS, and the 7-day target for high or critical proxy advisories. Operational inputs still needed: OI-1, the named owner of the Caddy build maintenance, and OI-2, the off-VPS backup provider. Implementation tasks, not approvals: re-verifying the Caddy pins at build time (task 9.3), and the privacy notice and UK GDPR wording.

@@ -14,7 +14,7 @@ The **Status** column records **decision provenance**: where the requirement cam
 | **A+RD** | As A, but part of the requirement still depends on an input from the owners (none remain: the Gate 6 inputs LI-1 to LI-4 were given on 2026-11-22, with LI-3 recorded as an outstanding legal item) |
 | **B** | Taken from the baseline requirements without a separate owner decision. It was approved explicitly as part of Gate 1 |
 
-Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and state machine, 1.5 security assessment, 1.6 licensing and contributor arrangements. Current state: **Gates 1.1 to 1.6 signed off on 2026-11-22** (R19 licensing text approved at 1.6, legal review LI-3 outstanding; 1.2 with the key command-list wording in `deployment.md` 2.1 and 6.3 and `design.md` section 3 re-confirmed the same day). Gate 2's reopened sentence in `design.md` section 16 was re-confirmed the same day (see `tasks.md` 1.2). A requirement is fully approved only when every gate listed in its row is signed off.
+Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and state machine, 1.5 security assessment, 1.6 licensing and contributor arrangements. Current state: **Gates 1.1 to 1.6 signed off on 2026-11-22** (R19 licensing text approved at 1.6, legal review LI-3 outstanding; 1.2 with the key command-list wording in `deployment.md` 2.1 and 6.3 and `design.md` section 3 re-confirmed the same day). Gate 2's reopened sentence in `design.md` section 16 was re-confirmed the same day (see `tasks.md` 1.2). The task 1.8 fixes (CR-25) reopened Gates 1 to 5 for the changed parts only, listed in `tasks.md` 1.1 to 1.5. Those parts are awaiting owner confirmation, and task 1.8 awaits the owner marking it complete. Task 1.7 was confirmed on 2026-11-22. A requirement is fully approved only when every gate listed in its row is signed off and no reopened part of it awaits confirmation.
 
 ## 2. Matrix
 
@@ -29,7 +29,7 @@ Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and 
 | R7 | Completion and results | `requirements.md`, `state-machine.md`, `openapi.yaml` | `getResults`, `submitGuess` (completing guess) | `game_results` primary key, `games` completion `CHECK`. Results read no ciphertext before `COMPLETED` is verified | TS-ENG, TS-STATE, TS-SEC, TS-ENC, TS-CONC-05, TS-CONC-16, TS-DB | 1.1, 1.3, 1.4, 1.5 | A |
 | R8 | Credentials, rotation, authorisation point | `requirements.md`, `design.md` (section 5), `state-machine.md` (sections 1.3, 1.4, 3), `security-assessment.md` (section 2), `openapi.yaml` | `rotateAccessToken`, all authenticated operations | `credentials` type, partial unique indexes, composite foreign key to player and game, `token_rotations` | TS-CRED, TS-CONC-06, TS-CONC-07, TS-CONC-08, TS-CONC-18, TS-SEC, TS-DB | 1.1, 1.2, 1.3, 1.4, 1.5 | A (RD-3, RD-11, RD-12 approved) |
 | R9 | Rematch | `requirements.md`, `state-machine.md` (sections 3, 4), `database-schema.md`, `openapi.yaml` | `mintRematchCapability`, `createRematch` | Primary key of `rematch_markers` (one ever, survives rematch deletion), `UNIQUE (rematch_game_id)`, one-live-capability partial index. All unused capabilities revoked on creation | TS-CRED, TS-CONC-09, TS-CONC-10, TS-CONC-13, TS-CONC-19, TS-DB | 1.1, 1.3, 1.4 | A (RD-6, CH-3 approved) |
-| R10 | Encryption, key management, usage counter | `requirements.md`, `security-assessment.md` (section 3), `design.md` (sections 9, 9.1), `database-schema.md` (section 6.2), `deployment.md` (sections 5, 6) | none (internal), `getHealth` (key ring readiness, key usage state) | `key_id` columns, fixed-length ciphertext `CHECK`s on `secret_codes`, `guesses`, `token_rotations`; `key_usage` one row per key with `CHECK (reserved <= 2^30)` | TS-ENC, TS-CONC-14, TS-CONC-20, TS-CONC-21, TS-CONC-22, TS-CONC-23, TS-CONC-24, TS-CONC-25, TS-CONC-26, TS-CONC-27, TS-CONC-28, TS-CONC-29, TS-OPS, TS-SEC | 1.1, 1.2, 1.4, 1.5 | A (RD-10, RD-13 with conditions, RD-14 approved) |
+| R10 | Encryption, key management, usage counter | `requirements.md`, `security-assessment.md` (section 3), `design.md` (sections 9, 9.1), `database-schema.md` (section 6.2), `deployment.md` (sections 5, 6) | none (internal), `getHealth` (key ring readiness), `getMetrics` (key usage state) | `key_id` columns, fixed-length ciphertext `CHECK`s on `secret_codes`, `guesses`, `token_rotations`; `key_usage` one row per key with `CHECK (reserved <= 2^30)` | TS-ENC, TS-CONC-14, TS-CONC-20, TS-CONC-21, TS-CONC-22, TS-CONC-23, TS-CONC-24, TS-CONC-25, TS-CONC-26, TS-CONC-27, TS-CONC-28, TS-CONC-29, TS-OPS, TS-SEC | 1.1, 1.2, 1.4, 1.5 | A (RD-10, RD-13 with conditions, RD-14 approved) |
 | R11 | Expiry, retention, cleanup | `requirements.md`, `state-machine.md` (section 1.1), `database-schema.md` (sections 5, 7), `deployment.md` (section 7) | `runCleanup`, all operations (`GAME_EXPIRED`) | `games.expires_at` and index, cascade deletes, `SKIP LOCKED` cleanup statement | TS-RET, TS-CRED, TS-CONC-10 to TS-CONC-13, TS-OPS | 1.1, 1.4, 1.5 | A |
 | R12 | API conventions and errors | `requirements.md`, `openapi.yaml` | All operations | None | TS-CONTRACT, TS-API, TS-VAL | 1.1, 1.3 | A |
 | R13 | Security, privacy, logging, metrics | `requirements.md`, `security-assessment.md` (sections 4, 6), `design.md` (section 14) | `getMetrics`, `getHealth` | `rate_limits` stores HMACs only, no IP or token columns anywhere | TS-SEC, TS-RATE, TS-OPS | 1.1, 1.5 | A (RD-9 approved) |
@@ -141,6 +141,7 @@ Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and 
 | CR-6 | R19.1 | `README.md` |
 | CR-7 | R19.5 | `revision-3.1-review-package.md` |
 | CR-8 | R9.4, R9.8 | `database-schema.md` `rematch_markers` |
+| CR-25 | R8.8, R8.13, R10.7, R10.13, R10.14, R20.3, R21.1 | every specification file, `openapi.yaml`, `ci.yml`, `README.md`, `.github/copilot-instructions.md`, `verify-schema.py`, `check-consistency.py` C16, C21, C31 to C36 (see `requirements.md` CR-25) |
 | CR-24 | R10.10, R10.13, R10.14 | `security-assessment.md` 3.3a, 3.6, 3.8, 3.9, 5 (T36 to T39), 8, `test-strategy.md` 18, `deployment.md` 2.1, 6.3, `design.md` 3, `tasks.md` 9.2a, `check-consistency.py` C27, C28 |
 | CR-23 | R10.10, R10.14 | `state-machine.md` 1.3, `check-consistency.py` C26 |
 | CR-22 | R10.7, R12.3, R20.7 | `openapi.yaml` draft 6, `check-consistency.py` C25 |
@@ -168,6 +169,15 @@ Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and 
 | RD-9 | R20.4, R20.10 | `security-assessment.md` section 6.2 |
 | RD-10 | R10.10 | `security-assessment.md` section 3.3a |
 | RD-13 | R10.10, R10.13, R21.4 | `database-schema.md` section 6.2, `deployment.md` section 6.1 |
+| RD-24 | R10.5, R10.11, R10.13 | `database-schema.md` 6.2a, `security-assessment.md` 3.8, 3.9, `deployment.md` 6.2, 7, `test-strategy.md` TS-CONC-31 |
+| RD-23 | R10.13, R11.9 | `database-schema.md` 6.2a, `deployment.md` 6.2, 7, `security-assessment.md` 3.6, `test-strategy.md` TS-CONC-31 |
+| RD-22 | R20.3, R20.6, R20.7, R20.9 | `state-machine.md` section 3.1, `deployment.md` section 4.2, `design.md` section 11, `security-assessment.md` 2.2, `test-strategy.md` TS-CONC-30 |
+| RD-21 | R10.13 | `deployment.md` section 6.2, `database-schema.md` 6.2a, `security-assessment.md` 3.6 |
+| RD-20 | R8.8, R8.13, R20.3 | `state-machine.md` section 3, `design.md` 5.1, 8.1, `security-assessment.md` T28 |
+| RD-19 | R10.13 | `deployment.md` section 6.2, `database-schema.md` 6.2a, `security-assessment.md` 3.6 |
+| RD-18 | R8.13, R20.3 | `deployment.md` section 4.2, `state-machine.md` section 3.1, `design.md` 5.1 |
+| RD-17 | R21.1 | `deployment.md` section 1, `design.md` section 13 |
+| RD-16 | R20.3 | `deployment.md` section 4.2 |
 | RD-15 | none (sign-off process) | `tasks.md` Phase 1, `.github/copilot-instructions.md` |
 | RD-14 | R10.10, R10.14 | `database-schema.md` sections 6.2, 6.3, `security-assessment.md` section 3.6a |
 | RD-11 | R8.13, R10.7, R13.2 | `security-assessment.md` sections 2.2, 3.5, `state-machine.md` section 3.1 |
