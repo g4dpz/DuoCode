@@ -170,13 +170,13 @@ tk=files['tasks.md']
 lines=tk.splitlines()
 for idx,l in enumerate(lines):
     if re.match(r'- \[x\]',l):
-        m=re.match(r'- \[x\] (1\.[1-6]) \*\*Gate',l)
+        m=re.match(r'- \[x\] (1\.[1-6]) \*\*Gate|- \[x\] (1\.9) \*\*Phase 1 sign-off',l)
         nxt=lines[idx+1] if idx+1<len(lines) else ''
         if re.match(r'- \[x\] 1\.[78] ',l):
             if not re.search(r'Done \d{4}-\d{2}-\d{2}',nxt): pr.append(f'{l[6:9]} marked done without a dated record')
             continue
         if not m: pr.append('marked done but not a Phase 1 gate: '+l[:60])
-        elif not re.search(r'Signed off \d{4}-\d{2}-\d{2} by .+owner statement "[^"]*\S[^"]*"',nxt): pr.append(f'gate {m.group(1)} marked done without a recorded owner sign-off')
+        elif not re.search(r'Signed off \d{4}-\d{2}-\d{2} by .+owner statement "[^"]*\S[^"]*"',nxt): pr.append(f'task {m.group(1) or m.group(2)} marked done without a recorded owner sign-off')
 if re.search(r'^- \[x\] 1\.9',tk,re.M) and len(re.findall(r'^- \[x\] 1\.[1-6] ',tk,re.M))<6: pr.append('1.9 marked done before all six gates')
 if re.search(r'^- \[x\] 1\.9',tk,re.M) and len(re.findall(r'^- \[x\] 1\.[78] ',tk,re.M))<2: pr.append('1.9 marked done before 1.7 and 1.8 are complete')
 if not re.search(r'^- \[[ x]\] 1\.9 .*1\.7 and 1\.8 are complete',tk,re.M): pr.append('1.9 does not list 1.7 and 1.8 as prerequisites')
@@ -237,7 +237,7 @@ for f in tracked:
     elif ext=='.py' and f.startswith('.kiro/specs/duocode/'): continue   # specification tooling, not application code
     elif ext not in allowed_ext: pr.append(f'{f}: unexpected file type')
     elif f.startswith('.github/workflows/'): continue               # CI skeleton added earlier at the owner request, no application logic
-if any(l.startswith('- [x]') and not __import__('re').match(r'- \[x\] 1\.(?:[1-6] \*\*Gate|[78] )',l) for l in files['tasks.md'].splitlines()): pr.append('an implementation task is marked done')
+if any(l.startswith('- [x]') and not __import__('re').match(r'- \[x\] 1\.(?:[1-6] \*\*Gate|[78] |9 \*\*Phase 1 sign-off)',l) for l in files['tasks.md'].splitlines()): pr.append('an implementation task is marked done')
 check('C21 no application code, database migration or implementation directory exists (only specification, licensing, CI skeleton and the two specification tool scripts)',pr)
 # 23 key usage design consistency (CR-9)
 pr=[]
