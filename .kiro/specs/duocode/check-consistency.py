@@ -172,9 +172,14 @@ for idx,l in enumerate(lines):
     if re.match(r'- \[x\]',l):
         m=re.match(r'- \[x\] (1\.[1-6]) \*\*Gate',l)
         nxt=lines[idx+1] if idx+1<len(lines) else ''
+        if re.match(r'- \[x\] 1\.[78] ',l):
+            if not re.search(r'Done \d{4}-\d{2}-\d{2}',nxt): pr.append(f'{l[6:9]} marked done without a dated record')
+            continue
         if not m: pr.append('marked done but not a Phase 1 gate: '+l[:60])
         elif not re.search(r'Signed off \d{4}-\d{2}-\d{2} by .+owner statement "[^"]*\S[^"]*"',nxt): pr.append(f'gate {m.group(1)} marked done without a recorded owner sign-off')
 if re.search(r'^- \[x\] 1\.9',tk,re.M) and len(re.findall(r'^- \[x\] 1\.[1-6] ',tk,re.M))<6: pr.append('1.9 marked done before all six gates')
+if re.search(r'^- \[x\] 1\.9',tk,re.M) and len(re.findall(r'^- \[x\] 1\.[78] ',tk,re.M))<2: pr.append('1.9 marked done before 1.7 and 1.8 are complete')
+if not re.search(r'^- \[[ x]\] 1\.9 .*1\.7 and 1\.8 are complete',tk,re.M): pr.append('1.9 does not list 1.7 and 1.8 as prerequisites')
 awaiting=re.findall(r'^  - \*\*Reopened [^\n]*Awaiting an explicit owner confirmation',tk,re.M)
 if awaiting:
     if re.search(r'^- \[x\] 1\.9',tk,re.M): pr.append('1.9 marked done while a reopened gate part awaits confirmation')
@@ -394,6 +399,18 @@ for m in re.finditer(r'(?:listed under|see) "([^"]+)"',req):
     q=m.group(1)
     if not any(h==q or h.startswith(q+' (') for h in heads): pr.append(f'requirements.md quotes the heading "{q}", which does not exist')
 check('C29 every heading quoted by name in requirements.md exists',pr)
+# 30 README layout matches the approved design.md layout (task 1.7)
+pr=[]
+lay=files['design.md']; lay=lay[lay.index('## 3. Repository layout'):lay.index('## 4.')]
+rd=files['README.md']; rtree=rd[rd.index('duocode/\n'):rd.index('.gitignore',rd.index('duocode/\n'))]
+names=lambda txt: set(re.findall(r'[├└]── ([\w.-]+/?)',txt))
+dl=names(lay)|{'caddy/'}
+for want in sorted(dl):
+    if want.endswith('.yml') or want in ('frontend/',): continue
+    if want not in names(rtree): pr.append(f'README layout lacks {want}')
+for stale in ('awaiting owner approval','Caddy or Nginx','subject to owner approval'):
+    if stale in rd: pr.append(f'README still says "{stale}"')
+check('C30 the README layout lists the approved design.md layout and carries no superseded approval statements',pr)
 # 22 OpenAPI lint
 import shutil as _sh
 if _sh.which('npx'):

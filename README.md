@@ -15,7 +15,7 @@ Project status
 
 The first development milestone is a fully playable backend, accessible through its REST API. The game engine, persistence layer, API and automated test infrastructure will be validated before development of the graphical interface begins.
 
-The project is currently at the specification stage: requirements, architecture, API contract, database schema and security assessment are awaiting owner approval, and no application code has been written yet. Product naming, visual identity and commercial arrangements remain subject to review.
+The project is currently at the specification stage: requirements, architecture, API contract, database schema, security assessment and licensing have been approved by the owners (Phase 1 in tasks.md), and no application code has been written yet. Implementation starts only when the owners authorise Phase 2. Product naming, visual identity and commercial arrangements remain subject to review.
 
 The game
 
@@ -120,7 +120,7 @@ Docker Compose
 
 Reverse proxy
 
-Caddy or Nginx
+Caddy (pinned custom build with a rate-limit module; Nginx is the documented fallback)
 
 Version control
 
@@ -286,7 +286,7 @@ Secret codes and guesses are encrypted at rest (AES-256-GCM) with keys held outs
 Rate limits are shared across application instances through PostgreSQL, with coarse per-IP limits at the proxy.
 Guess submissions require an Idempotency-Key, so retries never consume extra attempts. Token rotation is idempotent too, so a lost response does not lock a player out.
 API access must not rely on client-side validation.
-Games expire and are deleted automatically: unjoined 7 days, in progress 30 days, completed 180 days (configurable, subject to owner approval).
+Games expire and are deleted automatically: unjoined 7 days, in progress 30 days, completed 180 days (configurable; approved defaults).
 The implementation should follow secure development practices appropriate to a public-facing web service.
 
 Repository structure
@@ -295,7 +295,8 @@ The repository layout is:
 
 duocode/
 ├── .github/
-│   └── workflows/
+│   ├── workflows/
+│   └── copilot-instructions.md
 ├── .kiro/
 │   └── specs/
 │       └── duocode/
@@ -306,7 +307,9 @@ duocode/
 │   │   ├── services/
 │   │   ├── persistence/
 │   │   ├── http/
-│   │   └── config/
+│   │   ├── config/
+│   │   ├── tasks/
+│   │   └── main.ts
 │   ├── tests/
 │   └── deno.json
 ├── tools/
@@ -317,6 +320,7 @@ duocode/
 ├── postman/
 ├── docs/
 ├── deployment/
+│   └── caddy/
 ├── README.md
 ├── CONTRIBUTING.md
 ├── LICENSE
@@ -379,7 +383,7 @@ Current priorities
 
 The immediate priorities are:
 
-Finalise the backend architecture and API design.
+Complete the Phase 1 sign-off of the specification.
 Implement the independent game engine.
 Implement game and player management.
 Introduce PostgreSQL persistence.
