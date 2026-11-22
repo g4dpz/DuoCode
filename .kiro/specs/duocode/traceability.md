@@ -169,6 +169,9 @@ Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and 
 | RD-9 | R20.4, R20.10 | `security-assessment.md` section 6.2 |
 | RD-10 | R10.10 | `security-assessment.md` section 3.3a |
 | RD-13 | R10.10, R10.13, R21.4 | `database-schema.md` section 6.2, `deployment.md` section 6.1 |
+| RD-24 | R10.5, R10.11, R10.13 | `database-schema.md` 6.2a, `security-assessment.md` 3.8, 3.9, `deployment.md` 6.2, 7, `test-strategy.md` TS-CONC-31 |
+| RD-23 | R10.13, R11.9 | `database-schema.md` 6.2a, `deployment.md` 6.2, 7, `security-assessment.md` 3.6, `test-strategy.md` TS-CONC-31 |
+| RD-22 | R20.3, R20.6, R20.7, R20.9 | `state-machine.md` section 3.1, `deployment.md` section 4.2, `design.md` section 11, `security-assessment.md` 2.2, `test-strategy.md` TS-CONC-30 |
 | RD-21 | R10.13 | `deployment.md` section 6.2, `database-schema.md` 6.2a, `security-assessment.md` 3.6 |
 | RD-20 | R8.8, R8.13, R20.3 | `state-machine.md` section 3, `design.md` 5.1, 8.1, `security-assessment.md` T28 |
 | RD-19 | R10.13 | `deployment.md` section 6.2, `database-schema.md` 6.2a, `security-assessment.md` 3.6 |

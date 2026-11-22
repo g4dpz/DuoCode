@@ -534,11 +534,26 @@ if 'except a completed `getResults`' not in files['simulator-design.md']: pr.app
 check('C39 the simulator ban on opponent guesses and feedback exempts completed getResults',pr)
 pr=[]
 sm=files['state-machine.md']
-for need in ('Charging `pl:rotate` for twin requests','one charge statement','read-only check','outside the game transaction'):
+for need in ('Charging `pl:rotate` for rotation requests (RD-22','read-only replay check','before `BEGIN`','over-charge of one unit is accepted'):
     if need not in sm: pr.append('state-machine.md: missing '+need)
-if 'Twin rotations' not in files['test-strategy.md']: pr.append('test-strategy.md: no twin rotation test')
-if 'charged after its transaction commits' not in dep: pr.append('deployment.md: no pl:rotate post-commit charge rule')
-check('C40 the pl:rotate charging order for twin rotation requests (availability check, charge after a committed rotation, replay re-check before 429) is defined in state-machine.md and referenced in deployment.md and test-strategy.md',pr)
+for fn in ('state-machine.md','deployment.md','design.md','requirements.md','security-assessment.md','test-strategy.md','revision-3.1-review-package.md','tasks.md'):
+    for i,l in enumerate(files[fn].splitlines(),1):
+        if re.search(r'refund|after its transaction commits|after the commit|after a committed rotation|only checks that|issued after the rotation committed|after it has committed|rotation that has committed|charged once, after|charge of a rotation that has',l,re.I) and 'pl:rotate' in l and not re.search(r'no charge after|none after|no refund|not refund|never refund|replaces the round-2|round-2 text|round-2 charge|rather than|no `pl:rotate` statement runs after',l,re.I) and not l.startswith('| 5 |'):
+            pr.append(f'{fn}:{i}: post-commit or refund charging wording for pl:rotate')
+if 'Twin rotations' not in files['test-strategy.md'] or 'TS-CONC-30' not in files['test-strategy.md']: pr.append('test-strategy.md: no twin rotation test or TS-CONC-30')
+if 'before its transaction' not in dep: pr.append('deployment.md: no pl:rotate charge-before-transaction rule')
+check('C40 pl:rotate is charged before the rotation transaction (RD-22), a known replay is found by a read-only check first, and no post-commit charge or refund wording remains',pr)
+pr=[]
+reqt=files['requirements.md']
+for n in ('RD-22','RD-23','RD-24'):
+    if not re.search(r'^\| '+n+r' \|.*i accept your recommendations',reqt,re.M): pr.append('requirements.md: '+n+' row missing or without owner statement')
+    if not re.search(r'^\| '+n+r' \|',files['traceability.md'],re.M): pr.append('traceability.md: no decision map row '+n)
+if 'keys:prune-accepted-loss' not in files['tasks.md'] or 'keys:prune-accepted-loss' not in dep or 'keys:prune-accepted-loss' not in files['database-schema.md']: pr.append('keys:prune-accepted-loss not defined in tasks.md, deployment.md and database-schema.md')
+if not re.search(r'`reencrypt` skips[^.]*accepted|skipped, as a count only',files['security-assessment.md']+files['database-schema.md']): pr.append('reencrypt skip rule (RD-24) missing')
+for g in ('1.1','1.2','1.4','1.5'):
+    m=re.search(r'- \[x\] '+re.escape(g)+r' .*?(?=\n- \[)',files['tasks.md'],re.S)
+    if not m or 'RD-24' not in m.group(0) and g in ('1.1','1.4','1.5') or 'Awaiting an explicit owner confirmation' not in m.group(0): pr.append('tasks.md '+g+': reopened entry does not cover RD-22 to RD-24')
+check('C41 RD-22 to RD-24 are recorded with the owner statement, mapped, and carried into the reopened gate entries (RD-23 prune command, RD-24 reencrypt skip)',pr)
 # 22 OpenAPI lint
 import shutil as _sh
 if _sh.which('npx'):
