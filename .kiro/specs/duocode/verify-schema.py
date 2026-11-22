@@ -1088,6 +1088,20 @@ try:
         finally:
             sql("REVOKE ALL ON ring_state FROM t_km, t_app, t_kv; DROP ROLE t_km; DROP ROLE t_app; DROP ROLE t_kv;")
 
+    @test("reconciliation privileges: keymgmt's column grants (secret_codes.key_id, guesses.key_id, token_rotations.token_key_id) are valid and allow the pre-check but no ciphertext (CR-20)")
+    def _():
+        sql("DROP ROLE IF EXISTS t_km2; CREATE ROLE t_km2;")
+        grants = re.search(r"`SELECT \(key_id\)` on `secret_codes` and `guesses` and `SELECT \(token_key_id\)` on `token_rotations`", open(HERE / "deployment.md").read())
+        assert grants, "deployment.md does not state the column grants"
+        try:
+            sql("GRANT SELECT (key_id) ON secret_codes TO t_km2; GRANT SELECT (key_id) ON guesses TO t_km2; GRANT SELECT (token_key_id) ON token_rotations TO t_km2;")
+            sql("SET ROLE t_km2; SELECT DISTINCT key_id FROM secret_codes UNION SELECT DISTINCT key_id FROM guesses UNION SELECT DISTINCT token_key_id FROM token_rotations WHERE token_key_id IS NOT NULL;")
+            sql("SET ROLE t_km2; SELECT ciphertext FROM secret_codes;", expect_error="permission denied")
+            sql("SET ROLE t_km2; SELECT guess_ciphertext FROM guesses;", expect_error="permission denied")
+            sql("SET ROLE t_km2; SELECT token_ciphertext FROM token_rotations;", expect_error="permission denied")
+        finally:
+            sql("REVOKE ALL ON secret_codes, guesses, token_rotations FROM t_km2; DROP ROLE t_km2;")
+
     @test("gate reconciliation after restore: stale retired and abandoned requirements are replaced by the newest ring's keys; refused while a reader is live (CR-19)")
     def _():
         reset_data(); sql("TRUNCATE instance_ring_reports;")
