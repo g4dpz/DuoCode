@@ -433,8 +433,9 @@ paths:
       summary: Liveness and readiness
       description: |
         Returns 200 when the process, the database and the key ring are usable. It deliberately exposes nothing about
-        key usage, thresholds or key state: those are available only on the admin listener. It returns 503 only when the
-        process cannot work at all.
+        key usage, thresholds or key state: those are available only on the admin listener, so an exhausted or sealed key
+        still returns 200. It returns 503 when the process cannot work at all, or, like every operation, when the
+        shared rate-limit store is unavailable (fail closed).
       security: []
       responses:
         '200':
@@ -448,14 +449,24 @@ paths:
                   status: { type: string, enum: [ok] }
         '429': { $ref: '#/components/responses/RateLimited' }
         '503':
-          description: Not ready.
+          description: |
+            Either the process is not ready (database or key ring unavailable), with body `{status: unavailable}`, or the
+            request was refused because the shared rate-limit store is unavailable (R20.7), with the standard error body
+            and code `SERVICE_UNAVAILABLE`. Both carry `Retry-After`. An exhausted or sealed encryption key does **not**
+            make the health check fail: the process can still serve reads and decrypt (R10.6).
+          headers:
+            Retry-After:
+              schema: { type: integer }
           content:
             application/json:
               schema:
-                type: object
-                required: [status]
-                properties:
-                  status: { type: string, enum: [unavailable] }
+                oneOf:
+                  - type: object
+                    required: [status]
+                    additionalProperties: false
+                    properties:
+                      status: { type: string, enum: [unavailable] }
+                  - $ref: '#/components/schemas/ErrorResponse'
         '500': { $ref: '#/components/responses/InternalError' }
   /admin/metrics:
     servers:
