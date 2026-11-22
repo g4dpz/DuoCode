@@ -170,11 +170,16 @@ tk=files['tasks.md']
 lines=tk.splitlines()
 for idx,l in enumerate(lines):
     if re.match(r'- \[x\]',l):
-        m=re.match(r'- \[x\] (1\.[1-6]) \*\*Gate',l)
+        m=re.match(r'- \[x\] (1\.[1-6]) \*\*Gate|- \[x\] (1\.9) \*\*Phase 1 sign-off',l)
         nxt=lines[idx+1] if idx+1<len(lines) else ''
+        if re.match(r'- \[x\] 1\.[78] ',l):
+            if not re.search(r'Done \d{4}-\d{2}-\d{2}',nxt): pr.append(f'{l[6:9]} marked done without a dated record')
+            continue
         if not m: pr.append('marked done but not a Phase 1 gate: '+l[:60])
-        elif not re.search(r'Signed off \d{4}-\d{2}-\d{2} by .+owner statement "[^"]*\S[^"]*"',nxt): pr.append(f'gate {m.group(1)} marked done without a recorded owner sign-off')
+        elif not re.search(r'Signed off \d{4}-\d{2}-\d{2} by .+owner statement "[^"]*\S[^"]*"',nxt): pr.append(f'task {m.group(1) or m.group(2)} marked done without a recorded owner sign-off')
 if re.search(r'^- \[x\] 1\.9',tk,re.M) and len(re.findall(r'^- \[x\] 1\.[1-6] ',tk,re.M))<6: pr.append('1.9 marked done before all six gates')
+if re.search(r'^- \[x\] 1\.9',tk,re.M) and len(re.findall(r'^- \[x\] 1\.[78] ',tk,re.M))<2: pr.append('1.9 marked done before 1.7 and 1.8 are complete')
+if not re.search(r'^- \[[ x]\] 1\.9 .*1\.7 and 1\.8 are complete',tk,re.M): pr.append('1.9 does not list 1.7 and 1.8 as prerequisites')
 awaiting=re.findall(r'^  - \*\*Reopened [^\n]*Awaiting an explicit owner confirmation',tk,re.M)
 if awaiting:
     if re.search(r'^- \[x\] 1\.9',tk,re.M): pr.append('1.9 marked done while a reopened gate part awaits confirmation')
@@ -232,7 +237,7 @@ for f in tracked:
     elif ext=='.py' and f.startswith('.kiro/specs/duocode/'): continue   # specification tooling, not application code
     elif ext not in allowed_ext: pr.append(f'{f}: unexpected file type')
     elif f.startswith('.github/workflows/'): continue               # CI skeleton added earlier at the owner request, no application logic
-if any(l.startswith('- [x]') and not __import__('re').match(r'- \[x\] 1\.[1-6] \*\*Gate',l) for l in files['tasks.md'].splitlines()): pr.append('an implementation task is marked done')
+if any(l.startswith('- [x]') and not __import__('re').match(r'- \[x\] 1\.(?:[1-6] \*\*Gate|[78] |9 \*\*Phase 1 sign-off)',l) for l in files['tasks.md'].splitlines()): pr.append('an implementation task is marked done')
 check('C21 no application code, database migration or implementation directory exists (only specification, licensing, CI skeleton and the two specification tool scripts)',pr)
 # 23 key usage design consistency (CR-9)
 pr=[]
@@ -394,6 +399,39 @@ for m in re.finditer(r'(?:listed under|see) "([^"]+)"',req):
     q=m.group(1)
     if not any(h==q or h.startswith(q+' (') for h in heads): pr.append(f'requirements.md quotes the heading "{q}", which does not exist')
 check('C29 every heading quoted by name in requirements.md exists',pr)
+# 30 README layout matches the approved design.md layout (task 1.7), compared as full paths
+pr=[]
+def tree_paths(txt,inline):
+    stack=[]; paths=set()
+    def add(p):
+        parts=p.split('/')
+        for i in range(1,len(parts)):
+            paths.add('/'.join(parts[:i])+'/')
+        if parts[-1]: paths.add(p)
+    for l in txt.splitlines():
+        m=re.match(r'^((?:│   |    )*)[├└]── (\S+)(.*)$',l)
+        if not m:
+            n=re.match(r'^\(([\w./-]+/) holds',l)   # design.md note under the tree, e.g. deployment/caddy/
+            if n and inline: add(n.group(1))
+            continue
+        depth=len(m.group(1))//4; stack=stack[:depth]; tok=m.group(2); full=''.join(stack)+tok
+        add(full)
+        if tok.endswith('/'): stack.append(tok)
+        elif inline:   # a file entry may carry sibling files and root-relative paths on the same line
+            parent=full[:full.rfind('/')+1] if '/' in full else ''
+            for x in m.group(3).split():
+                if '/' in x: add(x)
+                elif re.fullmatch(r'[\w.-]+\.\w+|\.\w+|LICENSE|NOTICE',x): add(parent+x)
+    return paths
+lay=files['design.md']; lay=lay[lay.index('## 3. Repository layout'):lay.index('## 4.')]
+rd=files['README.md']; i0=rd.index('duocode/\n'); rtree=rd[i0:rd.index('\n\n',i0)]
+want=tree_paths(lay,True)-{'frontend/'}   # frontend/ is created later; the README says so in prose
+have=tree_paths(rtree,False)
+for p in sorted(want-have): pr.append(f'README layout lacks {p}')
+for p in sorted(have-want): pr.append(f'README layout has {p}, which design.md section 3 does not')
+for stale in ('awaiting owner approval','Caddy or Nginx','subject to owner approval'):
+    if stale in rd: pr.append(f'README still says "{stale}"')
+check(f'C30 the README layout lists exactly the approved design.md layout as full paths ({len(want)} paths) and carries no superseded approval statements',pr)
 # 22 OpenAPI lint
 import shutil as _sh
 if _sh.which('npx'):

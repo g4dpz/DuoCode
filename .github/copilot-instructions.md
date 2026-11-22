@@ -9,7 +9,7 @@ DuoCode is an API-first, two-player, asynchronous code-breaking game. Backend MV
 - Also in `.kiro/specs/duocode/`: `database-schema.md`, `state-machine.md`, `security-assessment.md`, `test-strategy.md`, `simulator-design.md`, `deployment.md`, `tasks.md`
 
 ## Status
-No implementation is authorised until every Phase 1 gate (1.1 to 1.6) is signed off with no reopened part awaiting confirmation, and task 1.9 records the owner's written authorisation of Phase 2 (`tasks.md` Phase 1). Each gate needs an explicit statement from one owner, and one owner is enough (RD-15, `requirements.md`). Review specification changes for ambiguity, conflicts between documents, missing edge cases, security weaknesses, concurrency and data-integrity risks. Do not silently decide product or security questions. Record them as decisions in `requirements.md`.
+No implementation is authorised until every Phase 1 gate (1.1 to 1.6) is signed off with no reopened part awaiting confirmation, tasks 1.7 and 1.8 are complete, and task 1.9 records the owner's written authorisation of Phase 2 (`tasks.md` Phase 1). Each gate needs an explicit statement from one owner, and one owner is enough (RD-15, `requirements.md`). Review specification changes for ambiguity, conflicts between documents, missing edge cases, security weaknesses, concurrency and data-integrity risks. Do not silently decide product or security questions. Record them as decisions in `requirements.md`.
 
 ## Rules to enforce in reviews and generated code
 - Layout: `backend/`, `tools/` (with `tools/simulator/`), `openapi/`, `docs/`. No `frontend/` yet.
