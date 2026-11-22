@@ -2,13 +2,13 @@
 
 History: the revision 3.1 content was published on `spec/revision-3.1-review` and merged to `main` (PR #1, `b88580d`). The strict hard-stop correction (CR-9, section 3A) is on branch `spec/key-usage-strict-hard-stop`, created from that `main`. Commit hashes are reported with the branches, because a file cannot contain its own commit hash.
 
-The project stays in specification and approval mode. This package contains no application code, no database migration and no implementation task. **No gate is signed off.** The architecture (Deno, TypeScript, Oak, PostgreSQL, Docker Compose, Caddy) is unchanged.
+The project stays in specification and approval mode. This package contains no application code, no database migration and no implementation task. **Gate 1 is signed off. Gates 2 to 6 are not.** The architecture (Deno, TypeScript, Oak, PostgreSQL, Docker Compose, Caddy) is unchanged.
 
 ## 1. Gate status
 
 | Gate | Task | Subject | Status |
 |---|---|---|---|
-| 1 | 1.1 | Requirements | Not signed off |
+| 1 | 1.1 | Requirements | **Signed off 2026-11-22**, David Johnson (G4DPZ), as at `53c46df`. R19 licensing text pending Gate 6 |
 | 2 | 1.2 | Architecture | Not signed off |
 | 3 | 1.3 | OpenAPI specification | Not signed off |
 | 4 | 1.4 | Database schema and state machine | Not signed off |

@@ -153,10 +153,19 @@ for f in glob.glob(root+'.github/workflows/*.yml'):
     try: yaml.safe_load(open(f))
     except Exception as e: pr.append(f'{f}: {e}')
 check('C14 GitHub workflow files parse as YAML',pr)
-# 15 no approved gate
+# 15 gate sign-offs: only Phase 1 gates may be marked done, each with a recorded owner sign-off; nothing else
+pr=[]
 tk=files['tasks.md']
-pr=[l for l in tk.splitlines() if re.match(r'- \[x\]',l)]
-check('C15 no Phase 1 gate or task is marked approved in tasks.md',['marked done: '+l[:60] for l in pr])
+lines=tk.splitlines()
+for idx,l in enumerate(lines):
+    if re.match(r'- \[x\]',l):
+        m=re.match(r'- \[x\] (1\.[1-6]) \*\*Gate',l)
+        nxt=lines[idx+1] if idx+1<len(lines) else ''
+        if not m: pr.append('marked done but not a Phase 1 gate: '+l[:60])
+        elif not re.search(r'Signed off \d{4}-\d{2}-\d{2} by .+owner statement',nxt): pr.append(f'gate {m.group(1)} marked done without a recorded owner sign-off')
+if re.search(r'^- \[x\] 1\.9',tk,re.M) and len(re.findall(r'^- \[x\] 1\.[1-6] ',tk,re.M))<6: pr.append('1.9 marked done before all six gates')
+signed=re.findall(r'^- \[x\] (1\.[1-6]) ',tk,re.M)
+check(f'C15 only Phase 1 gates are marked done, each with a recorded owner sign-off (signed: {", ".join(signed) or "none"})',pr)
 # 16 baseline constants
 pr=[]
 if 'maxItems: 4' not in files['openapi.yaml']: pr.append('code length not constrained')
@@ -207,7 +216,7 @@ for f in tracked:
     elif ext=='.py' and f.startswith('.kiro/specs/duocode/'): continue   # specification tooling, not application code
     elif ext not in allowed_ext: pr.append(f'{f}: unexpected file type')
     elif f.startswith('.github/workflows/'): continue               # CI skeleton added earlier at the owner request, no application logic
-if any(l.startswith('- [x]') for l in files['tasks.md'].splitlines()): pr.append('a task is marked done')
+if any(l.startswith('- [x]') and not __import__('re').match(r'- \[x\] 1\.[1-6] \*\*Gate',l) for l in files['tasks.md'].splitlines()): pr.append('an implementation task is marked done')
 check('C21 no application code, database migration or implementation directory exists (only specification, licensing, CI skeleton and the two specification tool scripts)',pr)
 # 23 key usage design consistency (CR-9)
 pr=[]

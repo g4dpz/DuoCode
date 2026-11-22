@@ -14,7 +14,7 @@ Nothing below is signed off. All technical decisions are approved, and the statu
 | **A+RD** | As A, but part of the requirement still depends on an input from the owners (only gate 6 licensing inputs LI-1 to LI-4 remain) |
 | **B** | Derived from the baseline requirements without a separate decision. Awaits gate sign-off |
 
-Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and state machine, 1.5 security assessment, 1.6 licensing and contributor arrangements. Current state of every gate: **not signed off**.
+Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and state machine, 1.5 security assessment, 1.6 licensing and contributor arrangements. Current state: **Gate 1.1 signed off on 2026-11-22** (R19 licensing text pending 1.6). Gates 1.2 to 1.6 **not signed off**. A requirement is fully approved only when every gate listed in its row is signed off.
 
 ## 2. Matrix
 
