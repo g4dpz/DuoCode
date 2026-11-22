@@ -170,8 +170,8 @@ CREATE TABLE key_usage (                                  -- ONE authoritative r
   CHECK (NOT sealed OR reserved = 1073741824)                   -- a sealed key is always at the limit
 );
 
-CREATE TABLE instance_ring_reports (                    -- which ring each running instance has loaded (CR-16)
-  instance_id      uuid PRIMARY KEY,                    -- random per process start
+CREATE TABLE instance_ring_reports (                    -- which ring each running process has loaded (CR-16, CR-17)
+  presence_id      integer PRIMARY KEY,                 -- the process's presence lock id (random int4 per process start)
   ring_generation  integer NOT NULL CHECK (ring_generation >= 1),
   loaded_key_ids   smallint[] NOT NULL,                 -- every key id the instance can decrypt (ACTIVE, STAGED, DECRYPT_ONLY)
   reported_at      timestamptz NOT NULL DEFAULT now()
@@ -383,26 +383,55 @@ Consequence of G1 to G4: the number of encryption invocations under a key can ne
 - `keys:verify` checks the invariant `ciphertext rows under the key <= R` per key and fails if it is violated.
 - The reservation statement runs on a separate connection from the request transaction, before it begins. It holds the key row lock for one statement and never while waiting for any other lock. It may wait for transactions that hold the row in share mode for their commit-time check, which is short and cannot form a cycle, because those transactions never wait for anything the reserving connection holds (`design.md` section 8.2).
 
-### 6.2a Ring acknowledgement for staged activation (CR-16)
+### 6.2a Ring acknowledgement for staged activation (CR-16, CR-17)
 
-Every instance upserts its row in `instance_ring_reports` at start-up and on every refresh (`KEY_USAGE_REFRESH_SECONDS`):
+**Roster of live readers.** The set of processes that may read or write ciphertext is taken from live database sessions, not from recent reports, because a report can outlive its process and a live process can stop reporting. Every long-running process that loads the ring (`app`, `cleanup`, and a `reencrypt` job while it runs) keeps one dedicated **presence connection** for its whole life and holds a session advisory lock on it:
 
 ```sql
-INSERT INTO instance_ring_reports (instance_id, ring_generation, loaded_key_ids, reported_at)
+SELECT pg_advisory_lock(4242002, $1);              -- $1 = presence id: a random int4 chosen at process start
+```
+
+The lock disappears the moment the process or its connection ends, so `pg_locks` lists exactly the live readers. A process must hold its presence lock **and** have written its report before it serves any request. If its presence connection drops, it stops serving (not ready) until it has taken the lock again and reported again. The read-only `keyverify` job holds a lock in a separate class, `pg_advisory_lock(4242003, $1)`, and does not report. `keymgmt` loads the newest ring itself and is not part of the roster.
+
+**Report.** After taking its presence lock, and on every refresh, the process upserts:
+
+```sql
+INSERT INTO instance_ring_reports (presence_id, ring_generation, loaded_key_ids, reported_at)
 VALUES ($1, $2, $3, now())
-ON CONFLICT (instance_id) DO UPDATE SET ring_generation = EXCLUDED.ring_generation,
+ON CONFLICT (presence_id) DO UPDATE SET ring_generation = EXCLUDED.ring_generation,
   loaded_key_ids = EXCLUDED.loaded_key_ids, reported_at = now();
 ```
 
-`keys:activate <key_id> --expect <N>` refuses to activate unless this returns `true`, where `N` is the number of instances the operator runs (the Compose scale of every service that can encrypt or decrypt), `$2` is the staged key and `$3` is the freshness window (twice the refresh interval):
+On a clean shutdown it deletes its own row. Rows of processes that are gone are pruned by cleanup.
+
+**Online activation.** `keys:activate <key_id> --expect <N>` refuses unless this returns `true`. `$1` is `N`, the operator's expected number of live readers, and `$2` is the staged key:
 
 ```sql
-SELECT count(*) = $1 AND bool_and($2 = ANY (loaded_key_ids)) AS all_staged
-FROM instance_ring_reports
-WHERE reported_at > now() - $3::interval;
+WITH live AS (
+  SELECT objid::int AS presence_id FROM pg_locks
+  WHERE locktype = 'advisory' AND classid = 4242002 AND objsubid = 2 AND granted
+)
+SELECT $1 > 0                                      -- online activation needs at least one live reader; with none, use --offline
+   AND (SELECT count(*) FROM live) = $1
+   AND NOT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND classid = 4242003 AND granted)
+   AND NOT EXISTS (SELECT 1 FROM live l LEFT JOIN instance_ring_reports r ON r.presence_id = l.presence_id
+                   WHERE r.presence_id IS NULL OR NOT ($2 = ANY (r.loaded_key_ids)))
+   AS all_staged;
 ```
 
-An instance that is running but not reporting is not counted, so the count falls short of `N` and activation is refused. An instance that is stopped loads the newest ring when it starts. Rows not refreshed for a day are deleted by cleanup. The application role may insert and update this table and nothing else new. The `keymgmt` role may only read it.
+Every live reader must have a report that includes the staged key. A live reader without a report, or with a report that lacks the key, blocks activation. A stopped process holds no lock and is not counted, whatever its old report says. A running `keyverify` job blocks activation. The result is `false`, never `NULL`: on an empty roster, and for an expected count of 0, online activation is refused and the offline path below must be used.
+
+**Offline activation (initial setup and restore).** `keys:activate <key_id> --offline` is for the case where no reader is running: initial bootstrap, when no active key exists yet, and the restore procedure, where every reader has been stopped. It refuses unless this returns `true`:
+
+```sql
+SELECT NOT EXISTS (SELECT 1 FROM pg_locks
+                   WHERE locktype = 'advisory' AND classid IN (4242002, 4242003) AND granted)
+   AS no_readers;
+```
+
+Offline activation never runs while any reader is live. Online activation never accepts `--offline`. Both run under the ring single-writer lock.
+
+**Privileges.** The application role (used by `app`, `cleanup` and `reencrypt`) has `SELECT`, `INSERT`, `UPDATE` and `DELETE` on `instance_ring_reports`. The upsert reads columns through `EXCLUDED`, and cleanup's `DELETE` reads `reported_at`. The `keymgmt` role has `SELECT` on it. `pg_locks` is readable by every role, and advisory locks need no table privilege.
 
 ### 6.3 Key lifecycle: rotation completed at or after a threshold, and stale allowances (RD-14, CR-10, CR-12)
 
@@ -455,8 +484,10 @@ WHERE ctid IN (SELECT ctid FROM rate_limits
                WHERE refilled_at < clock_timestamp() - interval '1 hour'
                FOR UPDATE SKIP LOCKED);
 
-DELETE FROM instance_ring_reports                   -- reports of instances gone for a day (CR-16)
-WHERE reported_at < clock_timestamp() - interval '1 day';
+DELETE FROM instance_ring_reports                   -- reports of processes that no longer hold a presence lock (CR-16, CR-17)
+WHERE reported_at < clock_timestamp() - interval '1 hour'
+  AND presence_id NOT IN (SELECT objid::int FROM pg_locks
+                          WHERE locktype = 'advisory' AND classid = 4242002 AND objsubid = 2 AND granted);
 ```
 
 Properties:

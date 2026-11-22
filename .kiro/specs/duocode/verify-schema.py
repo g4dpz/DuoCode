@@ -264,6 +264,8 @@ try:
     commit_check_sql = next(b for b in blocks if "SELECT sealed FROM key_usage WHERE key_id = $1 FOR SHARE" in b).strip()
     report_sql = next(b for b in blocks if "INSERT INTO instance_ring_reports" in b)
     activation_sql = next(b for b in blocks if "AS all_staged" in b)
+    offline_sql = next(b for b in blocks if "AS no_readers" in b)
+    presence_sql = next(b for b in blocks if "SELECT pg_advisory_lock(4242002, $1);" in b).strip()
     L = 2 ** 30
     BLOCK = 1024
 
@@ -941,32 +943,67 @@ try:
             finish(A, f"SELECT pg_advisory_unlock({lock_key});")
         assert sql(f"SELECT pg_try_advisory_lock({lock_key}); SELECT pg_advisory_unlock({lock_key});").splitlines()[0] == "t"
 
-    @test("staged-activation acknowledgement: true only when exactly N fresh reports all include the staged key (CR-16)")
+    @test("staged-activation roster: live presence locks, not recent reports, decide; a stopped process is not counted, a silent live one blocks (CR-16, CR-17)")
     def _():
         sql("TRUNCATE instance_ring_reports;")
-        def report(iid, gen, keys, age_s=0):
-            sql(report_sql.replace("$1", f"'{u(iid)}'").replace("$2", str(gen)).replace("$3", "ARRAY[" + ",".join(map(str, keys)) + "]::smallint[]"))
-            if age_s:
-                sql(f"UPDATE instance_ring_reports SET reported_at = now() - interval '{age_s} seconds' WHERE instance_id = '{u(iid)}';")
-        def all_staged(n, key, window="60 seconds"):
-            return sql(activation_sql.replace("$1", str(n)).replace("$2", str(key)).replace("$3", f"'{window}'")) == "t"
-        report(1, 8, [1, 2]); report(2, 8, [1, 2])
-        assert all_staged(2, 2) is True
-        assert all_staged(3, 2) is False                   # one expected instance has not reported
-        report(3, 7, [1]); assert all_staged(3, 2) is False   # an instance without the staged key
-        report(3, 8, [1, 2]); assert all_staged(3, 2) is True
-        report(2, 8, [1, 2], age_s=600); assert all_staged(3, 2) is False   # a stale report does not count
+        procs = {}
+        def start_proc(pid, report_keys=None):
+            procs[pid] = session(presence_sql.replace("$1", str(pid)))      # the live presence connection
+            if report_keys is not None:
+                sql(report_sql.replace("$1", str(pid)).replace("$2", "8").replace("$3", "ARRAY[" + ",".join(map(str, report_keys)) + "]::smallint[]"))
+        def stop_proc(pid):
+            finish(procs.pop(pid))
+        def all_staged(n, key=2):
+            return sql(activation_sql.replace("$1", str(n)).replace("$2", str(key)))
+        try:
+            assert all_staged(0) == "f"                                     # empty roster: false, never NULL
+            start_proc(11, [1, 2]); start_proc(12, [1, 2])
+            assert all_staged(2) == "t" and all_staged(3) == "f"
+            start_proc(13, None)                                            # live reader that has NOT reported
+            assert all_staged(3) == "f"
+            stop_proc(11)                                                   # a stopped process with a fresh report ...
+            assert all_staged(2) == "f"                                     # ... is not counted, and the silent live reader still blocks
+            sql(report_sql.replace("$1", "13").replace("$2", "7").replace("$3", "ARRAY[1]::smallint[]"))   # reports without the staged key
+            assert all_staged(2) == "f"
+            sql(report_sql.replace("$1", "13").replace("$2", "8").replace("$3", "ARRAY[1,2]::smallint[]"))
+            assert all_staged(2) == "t"
+            V = session("SELECT pg_advisory_lock(4242003, 99);")            # a running keyverify blocks activation
+            try:
+                assert all_staged(2) == "f"
+                assert sql(offline_sql) == "f"
+            finally:
+                finish(V)
+            assert all_staged(2) == "t" and sql(offline_sql) == "f"         # readers live: offline activation refused
+        finally:
+            for pid in list(procs): stop_proc(pid)
+        assert sql(offline_sql) == "t"                                      # nobody live: offline activation allowed
+
+    @test("report privileges: the restricted application role can upsert its report and cleanup can prune (CR-17)")
+    def _():
+        sql("TRUNCATE instance_ring_reports;")
+        sql("DROP ROLE IF EXISTS duocode_app_t; CREATE ROLE duocode_app_t; GRANT SELECT, INSERT, UPDATE, DELETE ON instance_ring_reports TO duocode_app_t;")
+        prune = "DELETE FROM instance_ring_reports" + next(b for b in blocks if "WITH batch AS" in b).split("DELETE FROM instance_ring_reports", 1)[1]
+        try:
+            up = report_sql.replace("$1", "21").replace("$2", "8").replace("$3", "ARRAY[1]::smallint[]")
+            sql("SET ROLE duocode_app_t;\n" + up + "\n" + up)                 # insert, then the ON CONFLICT path
+            sql("UPDATE instance_ring_reports SET reported_at = now() - interval '2 hours';")
+            sql("SET ROLE duocode_app_t;\n" + prune)
+            assert sql("SELECT count(*) FROM instance_ring_reports;") == "0"
+        finally:
+            sql("REVOKE ALL ON instance_ring_reports FROM duocode_app_t; DROP ROLE duocode_app_t;")
 
     @test("role separation: keymgmt can change key_usage but cannot read game ciphertext; keyverify can read but not change (CR-16)")
     def _():
         sql("DROP ROLE IF EXISTS duocode_keymgmt; DROP ROLE IF EXISTS duocode_keyverify;")
         sql("CREATE ROLE duocode_keymgmt; GRANT SELECT, INSERT, UPDATE ON key_usage TO duocode_keymgmt; GRANT SELECT ON instance_ring_reports TO duocode_keymgmt;")
-        sql("CREATE ROLE duocode_keyverify; GRANT SELECT ON key_usage, secret_codes, guesses, idempotency_keys, token_rotations TO duocode_keyverify;")
+        sql("CREATE ROLE duocode_keyverify; GRANT SELECT ON key_usage, secret_codes, guesses, idempotency_keys, token_rotations TO duocode_keyverify; GRANT SELECT (id, game_id) ON players TO duocode_keyverify;")
         try:
             sql("SET ROLE duocode_keymgmt; SELECT count(*) FROM key_usage; UPDATE key_usage SET reserved = reserved WHERE false; SELECT count(*) FROM instance_ring_reports;")
             sql("SET ROLE duocode_keymgmt; SELECT count(*) FROM secret_codes;", expect_error="permission denied")
             sql("SET ROLE duocode_keymgmt; SELECT count(*) FROM guesses;", expect_error="permission denied")
             sql("SET ROLE duocode_keyverify; SELECT count(*) FROM secret_codes; SELECT count(*) FROM guesses; SELECT count(*) FROM key_usage;")
+            sql("SET ROLE duocode_keyverify; SELECT count(*) FROM secret_codes s JOIN players p ON p.id = s.player_id; SELECT count(*) FROM guesses g JOIN players p ON p.id = g.player_id; SELECT p.game_id FROM players p LIMIT 1;")   # AAD needs game_id
+            sql("SET ROLE duocode_keyverify; SELECT nickname FROM players;", expect_error="permission denied")
             sql("SET ROLE duocode_keyverify; UPDATE key_usage SET reserved = reserved WHERE false;", expect_error="permission denied")
         finally:
             sql("REVOKE ALL ON ALL TABLES IN SCHEMA public FROM duocode_keymgmt, duocode_keyverify; DROP ROLE duocode_keymgmt; DROP ROLE duocode_keyverify;")
