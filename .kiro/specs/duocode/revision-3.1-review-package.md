@@ -53,13 +53,7 @@ Your point was right. The revision 3.1 draft refused a reservation only after th
 
 **Terms (used identically everywhere).** A *reserved unit* is one permitted encryption counted in `R`. An *encryption invocation* is one actual encryption and consumes one reserved unit held by the instance. An *allowance* is the reserved units an instance holds unconsumed, and is part of `R`.
 
-**The reservation algorithm**
-1. A key row is registered once: `INSERT INTO key_usage (key_id) VALUES ($1) ON CONFLICT DO NOTHING`.
-2. Before an operation that may encrypt, the instance makes sure its allowance covers the operation's worst case. If not, it runs one statement in its own autocommit transaction on a separate connection:
-   `UPDATE key_usage SET reserved = reserved + $block WHERE key_id = $1 AND reserved + $block <= $hard_stop RETURNING reserved;`
-3. A returned row means the whole block was granted. No row means refused whole, nothing changed. The block joins the allowance only after the statement returns. An unknown outcome counts as refused.
-4. Each encryption invocation consumes one allowance unit, whatever happens to the surrounding transaction. An empty allowance cannot encrypt. The only way to refill it is step 2.
-5. `$hard_stop` is at most 2^30 and a multiple of the block (start-up validation), and the table has `CHECK (reserved <= 2^30)` as an absolute backstop.
+**The reservation algorithm.** The authoritative statements (registration, reservation, pre-encryption check, commit-time check, sealing) are in `database-schema.md` section 6.2 and are not copied here, so this package cannot drift from them (CR-14). In outline: one row per key holds the reserved total; an instance reserves whole blocks with one atomic conditional statement in its own autocommit transaction before any encryption; it claims units for an operation before the transaction and runs the pre-encryption check last; each encryption consumes a claimed unit; every writing transaction re-checks the sealed flag under a share lock before commit; and a `CHECK` at 2^30 is the database backstop.
 
 **Guarantees** (G1 to G8 in the specification, each tested): `R` never exceeds 2^30. Every invocation consumes a reserved unit, including those in failed or rolled-back transactions. Outstanding allowances are inside `R`. No instance can obtain units that take `R` past the limit. Concurrent reservations cannot pass the limit independently, because they all update one row and a waiting update re-evaluates the limit against the latest committed total. An instance never encrypts with an exhausted allowance. A restore cannot let encryption resume under a key whose counter may have rolled back. `R` can overestimate, never underestimate.
 
@@ -77,7 +71,7 @@ Your point was right. The revision 3.1 draft refused a reservation only after th
 
 **Files changed for CR-9:** `database-schema.md`, `design.md`, `security-assessment.md`, `deployment.md`, `test-strategy.md`, `requirements.md` (R10.10, R10.13, CR-9, RD-14, glossary), `traceability.md`, `tasks.md`, `verify-schema.py`, `check-consistency.py`, and this package.
 
-## 3B. Rotation after 2^28 (CR-10) and PR #2 review findings (CR-11, CR-12, CR-13)
+## 3B. Rotation after 2^28 (CR-10) and PR #2 review findings (CR-11 to CR-14)
 
 ### Rotation completed after the 2^28 threshold (your clarification)
 
@@ -153,6 +147,23 @@ Copilot's third review raised 10 new findings. All were substantive and accepted
 
 New lock level L3 (`design.md` 8.2): the key row in share mode, taken last before commit. The L0 statements that wait for it hold no other lock, so no deadlock is possible.
 
+### Fourth Copilot review of PR #2 (commit `6838bf1`): findings and dispositions (CR-14)
+
+10 new findings, all accepted. Two older threads (duplicate key material, `503` on code and guess submission) were already fixed in earlier commits and were answered in their threads.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | C24 still passes if the verifier hard-codes the SQL | Fixed. C24 now requires every SQL-producing assignment in `verify-schema.py` to extract from the specification |
+| 2 | A failing test can leave session `a` holding a lock and hang the next test | Fixed with `finally` cleanup |
+| 3 | The retry test never reaches the post-refusal recheck | Fixed. The unit is returned between the refused reservation and the final check, and the test fails if the recheck is removed |
+| 4 | An interrupted `keys:generate` can lose the identifier and fingerprint before they are in the backed-up history | Accepted. The history entry is written (`PENDING`) and the ring backed up **before** registration. An interrupted entry becomes `ABANDONED` and is never reused, and a restore seals it |
+| 5 | A lossy restore seals a pending `STAGED` key but leaves it staged | Accepted. Such a key is abandoned and a fresh key is generated. Activation refuses a sealed key |
+| 6 | The lossless proof can pass while a historical key's row is missing or its seal undone | Accepted. The proof also requires every history identifier's row to be present with the same fingerprint and sealed flag |
+| 7 | `design.md` 8.1 still ordered the check before the claim | **Real inconsistency, fixed.** 8.1 now says claim first, check last, as 9.1 does |
+| 8 | The review package carried incomplete SQL copies | Fixed. The package refers to `database-schema.md` 6.2 instead of copying statements |
+| 9 | Loaded material is not bound to the fingerprint registered for its identifier | Accepted and tested. The loader checks each entry against the history, and the pre-encryption check and the reservation statement both require `key_usage.fingerprint` to match the loaded material |
+| 10 | Retirement allowed the usage row to be removed | **Real inconsistency, fixed.** The row is kept for ever. Only the key material is destroyed |
+
 ## 4. Files (revision 3.1 branch, for history)
 
 Added: `.kiro/specs/duocode/revision-3.1-review-package.md` (replaces the revision 3 package), `.kiro/specs/duocode/check-consistency.py`, `.kiro/specs/duocode/verify-schema.py`, `CONTRIBUTING.md`, `LICENSE`, `NOTICE`.
@@ -168,13 +179,13 @@ Redocly lint of `openapi/openapi.yaml`: **valid, 0 errors, 0 warnings.** The Ope
 
 ### 5.2 Database schema, constraint and reservation tests
 
-`verify-schema.py` extracts the DDL, the reservation, registration, sealing and pre-encryption-check statements **from `database-schema.md`**, so the tested SQL is the specified SQL. It applies them to a throwaway cluster and runs 55 tests.
+`verify-schema.py` extracts the DDL, the reservation, registration, sealing and pre-encryption-check statements **from `database-schema.md`**, so the tested SQL is the specified SQL. It applies them to a throwaway cluster and runs 58 tests.
 
 | Server | Result |
 |---|---|
-| PostgreSQL 15.8 (Homebrew), with `pg_dump` and `pg_restore` | **55 of 55 passed**, three runs |
-| PostgreSQL 16.16 embedded build (no `pg_dump` of its version available) | **54 of 54 passed, 1 skipped** (the logical restore test), two runs |
-| **PostgreSQL 16.16 official `postgres:16` image (Debian, Docker Desktop)**, image digest `sha256:3950ad7c3148ca2175ef1b6c36c9efbf78957ae8fbe8b3a5d7c35af50500382f`, with its own `pg_dump` and `pg_restore` | **55 of 55 passed**, one run |
+| PostgreSQL 15.8 (Homebrew), with `pg_dump` and `pg_restore` | **58 of 58 passed**, three runs |
+| PostgreSQL 16.16 embedded build (no `pg_dump` of its version available) | **57 of 57 passed, 1 skipped** (the logical restore test), two runs |
+| **PostgreSQL 16.16 official `postgres:16` image (Debian, Docker Desktop)**, image digest `sha256:3950ad7c3148ca2175ef1b6c36c9efbf78957ae8fbe8b3a5d7c35af50500382f`, with its own `pg_dump` and `pg_restore` | **58 of 58 passed**, one run |
 
 What the tests cover (all use the real PostgreSQL statements and real concurrent connections, not a mocked counter):
 
@@ -205,15 +216,18 @@ What the tests cover (all use the real PostgreSQL statements and real concurrent
 | **Registration idempotent only for the same material (new, CR-13)** | Same material: row returned. Different material on the same id: no row, nothing changed. Same material on a new id: refused |
 | **Restore seals the whole fingerprint history (new, CR-13)** | A key registered after the backup and retired early was sealed again from the history, and its material was then refused under a new id |
 | **Lossless proof including staged keys (new, CR-13 rule)** | A missing or lagging staged key makes the restore not lossless |
-| **Retry after a refused reservation (new, CR-13 model)** | A returned unit was claimed instead of failing |
+| **Retry after a refused reservation (CR-13, corrected CR-14)** | A unit returned between the refusal and the final check was claimed by the same call, and the same scenario fails without the recheck |
+| **Material bound to the registry (new, CR-14)** | Reservation and pre-encryption check refused a key whose loaded material differs from the registered fingerprint |
+| **Lossless proof covers history keys (new, CR-14 rule)** | A missing history row or an undone seal makes the restore not lossless |
+| **Retired keys keep their row (new, CR-14)** | The row stays after retirement and the material is refused under a new identifier |
 
-The rest of the 55 tests are the constraint tests (seats, nicknames and bidirectional controls, guess chain, credential binding, one rematch ever, idempotency, rotation record, rate limits, cleanup, invariant check, start-up validation rule).
+The rest of the 58 tests are the constraint tests (seats, nicknames and bidirectional controls, guess chain, credential binding, one rematch ever, idempotency, rotation record, rate limits, cleanup, invariant check, start-up validation rule).
 
 **Limits, stated plainly.** No application exists. The instance in these tests is a small model of the allowance and claim rules. Its reservations, seals and checks go to real PostgreSQL. The tests prove the SQL, the constraints and the policy. They do not prove that a future vault follows the policy, which is why the (APP) tests in `test-strategy.md` are required in Phase 4. The staged rolling rotation (zero decrypt failures), the re-encryption recount, the claim-before-check order in the vault and the per-role health reporting are specified as (APP) tests and have not been run.
 
 ### 5.3 Specification consistency checks
 
-`check-consistency.py`, final run on the final file set (24 checks):
+`check-consistency.py`, final run on the final file set (24 checks). C24 was checked by mutation: replacing the extracted reservation statement in `verify-schema.py` with a hard-coded one makes C24 fail.
 
 ```
 PASS C01 every requirement R1..R21 defined and in traceability matrix
@@ -234,7 +248,7 @@ PASS C15 no Phase 1 gate or task is marked approved in tasks.md
 PASS C16 OpenAPI constrains codes to 4 symbols from 1..6
 PASS C17 nickname forbidden character classes agree between OpenAPI and database CHECK (NUL aside)
 PASS C18 OpenAPI rotation key pattern accepts v4 UUIDs and rejects v1 and wrong-variant values
-PASS C19 every decision in the register has a row in the traceability decision map (71 decisions)
+PASS C19 every decision in the register has a row in the traceability decision map (72 decisions)
 PASS C20 no decision recorded as approved in the register is still described as pending elsewhere
 PASS C21 no application code, database migration or implementation directory exists
 PASS C23 key usage design is consistent: one authoritative row per key, CHECK at 2^30, thresholds 2^27 / 2^28 / 2^30, strict statement, terms defined, sharding only mentioned as replaced
@@ -279,4 +293,4 @@ Inputs only you can give. I have not invented any of them:
 3. LI-1 to LI-4 (section 6).
 4. The (APP) tests and the restore and rotation drills with real tools (section 5.4).
 5. Drafting proposals not explicitly approved: proxy access-log retention (14 days, no IP by default), backup recipients, a named owner for the Caddy build, the 7-day target for critical proxy security upgrades, re-verification of the Caddy version pins at build time. The privacy notice and UK GDPR wording remain tasks.
-6. A fourth Copilot review of the CR-13 corrections is requested (see the report with PR #2).
+6. A fifth Copilot review of the CR-14 corrections is requested (see the report with PR #2).

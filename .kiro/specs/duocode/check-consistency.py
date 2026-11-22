@@ -42,7 +42,7 @@ for fn,t in files.items():
 check(f'C03 every TS group and TS-CONC id referenced is defined ({len(defined)} groups, {len(conc_def)} concurrency scenarios)',pr)
 # 4 decision ids
 reg=req
-ids={'ND':9,'C':7,'CL':8,'RD':14,'OD':10,'CR':13,'CH':6}
+ids={'ND':9,'C':7,'CL':8,'RD':14,'OD':10,'CR':14,'CH':6}
 pr=[]
 for fn,t in files.items():
     for k,mx in ids.items():
@@ -187,7 +187,7 @@ pr=[]
 for fn in spec:
     if fn=='revision-3.1-review-package.md': continue
     for i,l in enumerate(files[fn].splitlines(),1):
-        if re.search(r'\b(?:RD|CH|ND|CR|CL)-\d+',l) and re.search(r'\bpending\b',l,re.I) and 'Pending** (needs' not in l and 'None of the technical decisions is pending' not in l:
+        if re.search(r'\b(?:RD|CH|ND|CR|CL)-\d+',l) and re.search(r'\b[Pp]ending\b',l) and 'Pending** (needs' not in l and 'None of the technical decisions is pending' not in l:
             pr.append(f'{fn}:{i}: {l.strip()[:110]}')
 check('C20 no decision recorded as approved in the register is still described as pending elsewhere',pr)
 # 21 no application code, migrations or implementation tasks
@@ -239,7 +239,8 @@ if 'ON CONFLICT (key_id) DO UPDATE SET reserved = 1073741824, sealed = true' not
 for term,fn in (('highestKeyId','security-assessment.md'),('highestKeyId','deployment.md'),('KEY_USAGE_REFRESH_SECONDS','design.md'),('known-answer','security-assessment.md'),('claim','design.md')):
     if term not in files[fn]: pr.append(f'{fn} lacks {term}')
 if 'KEY_USAGE_REFRESH_SECONDS' not in files['requirements.md']: pr.append('R10.10 does not mention the refresh interval')
-if 'SELECT NOT sealed AS usable FROM key_usage' not in files['database-schema.md']: pr.append('pre-encryption check statement missing')
+if 'SELECT NOT sealed AND fingerprint = $2 AS usable FROM key_usage' not in files['database-schema.md']: pr.append('pre-encryption check statement missing or not bound to the fingerprint')
+if 'AND fingerprint = $4' not in files['database-schema.md']: pr.append('reservation statement not bound to the fingerprint')
 for fn in ('security-assessment.md','deployment.md','design.md','database-schema.md'):
     if 'sealed' not in files[fn]: pr.append(f'{fn} does not describe sealing')
 for fn in ('security-assessment.md','deployment.md','database-schema.md','requirements.md'):
@@ -259,8 +260,19 @@ check('C23 key usage design is consistent: one authoritative row per key, CHECK 
 # 24 verify-schema uses the specified statements
 vs=open(d+'verify-schema.py').read()
 pr=[]
-for need in ('database-schema.md','reserve_sql','seal_sql','register_sql','check_sql'):
-    if need not in vs: pr.append(f'verify-schema.py does not use {need}')
+if '(HERE / "database-schema.md")' not in vs: pr.append('verify-schema.py does not read database-schema.md')
+for name in ('reserve_sql','register_sql','check_sql','commit_check_sql'):
+    m=re.search(r'^\s*'+name+r'\s*=\s*(.+)$',vs,re.M)
+    if not m: pr.append(f'{name} is not assigned'); continue
+    if not m.group(1).startswith('next(b for b in blocks if'): pr.append(f'{name} is not extracted from the specification SQL blocks: {m.group(1)[:60]}')
+    if len(re.findall(r'^\s*'+name+r'\s*=',vs,re.M))!=1: pr.append(f'{name} is assigned more than once')
+m=re.search(r'^\s*seal_sql\s*=\s*(.+)$',vs,re.M)
+if not m or not m.group(1).startswith('re.search(') or 'spec_text' not in m.group(1): pr.append('seal_sql is not extracted from the specification text')
+for name in ('INSERT INTO key_usage','UPDATE key_usage','SELECT NOT sealed'):
+    lits=[l for l in vs.splitlines() if name in l and 'next(b for b in blocks' not in l and 're.search(' not in l and not l.strip().startswith('#') and 'old_key_usage' not in l and 'set_R' not in l and 'INSERT INTO key_usage(key_id, fingerprint, reserved)' not in l]
+    for l in lits:
+        if 'expect_error' in l or 'reserved = -1' in l or 'reserved = 1;' in l or 'reserved = {L + 1}' in l or 'SET sealed = true WHERE key_id = 2' in l: continue
+        pr.append(f'hard-coded key_usage statement in verify-schema.py: {l.strip()[:80]}')
 check('C24 the schema verification tool takes the reservation, registration and sealing statements from database-schema.md',pr)
 # 22 OpenAPI lint
 import shutil as _sh

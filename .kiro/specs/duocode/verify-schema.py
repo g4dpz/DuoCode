@@ -260,20 +260,20 @@ try:
     reserve_sql = next(b for b in blocks if "UPDATE key_usage" in b and "RETURNING reserved" in b)
     register_sql = next(b for b in blocks if "INSERT INTO key_usage (key_id, fingerprint) VALUES ($1, $2)" in b)
     seal_sql = re.search(r"`(INSERT INTO key_usage \(key_id, fingerprint, reserved, sealed\) VALUES \(\$1, \$2, 1073741824, true\) ON CONFLICT \(key_id\) DO UPDATE SET reserved = 1073741824, sealed = true;)`", spec_text).group(1)
-    check_sql = next(b for b in blocks if "SELECT NOT sealed AS usable FROM key_usage" in b)
+    check_sql = next(b for b in blocks if "SELECT NOT sealed AND fingerprint = $2 AS usable FROM key_usage" in b)
     commit_check_sql = next(b for b in blocks if "SELECT sealed FROM key_usage WHERE key_id = $1 FOR SHARE" in b).strip()
     L = 2 ** 30
     BLOCK = 1024
 
-    def reserve(k, block=BLOCK, limit=L):
-        """The real reservation statement on its own connection. Returns the new total, or None if refused."""
-        text = reserve_sql.replace("$1", str(k)).replace("$2", str(block)).replace("$3", str(limit))
-        out = sql(text)
-        return int(out) if out else None
-
     def fp(k, material=None):
         """Stand-in for the key fingerprint: SHA-256 of the key material (the material is a label here)."""
         return f"sha256(convert_to('material-{material if material is not None else k}','UTF8'))"
+
+    def reserve(k, block=BLOCK, limit=L, material=None):
+        """The real reservation statement on its own connection. Returns the new total, or None if refused."""
+        text = reserve_sql.replace("$1", str(k)).replace("$2", str(block)).replace("$3", str(limit)).replace("$4", fp(k, material))
+        out = sql(text)
+        return int(out) if out else None
 
     def register(k, material=None, expect_error=None):
         return sql(register_sql.replace("$1", str(k)).replace("$2", fp(k, material)), expect_error=expect_error)
@@ -281,9 +281,9 @@ try:
     def seal(k, material=None):
         sql(seal_sql.replace("$1", str(k)).replace("$2", fp(k, material)))
 
-    def usable(k):
+    def usable(k, material=None):
         """The pre-encryption check taken from the specification. No row (unregistered key) counts as unusable."""
-        return sql(check_sql.replace("$1", str(k))) == "t"
+        return sql(check_sql.replace("$1", str(k)).replace("$2", fp(k, material))) == "t"
 
     def R(k=1):
         out = sql(f"SELECT coalesce(sum(reserved),0) FROM key_usage WHERE key_id={k};")
@@ -414,8 +414,8 @@ try:
     @test("the same interleaving with the real statement: the second reservation waits, re-checks, and is refused")
     def _():
         reset_data(); set_R(1, L - BLOCK)
-        A = session("BEGIN;\n" + reserve_sql.replace("$1", "1").replace("$2", str(BLOCK)).replace("$3", str(L)))   # A holds the row lock, uncommitted
-        bounded = "SET lock_timeout = '20s';\n" + reserve_sql.replace("$1", "1").replace("$2", str(BLOCK)).replace("$3", str(L))
+        A = session("BEGIN;\n" + reserve_sql.replace("$1", "1").replace("$2", str(BLOCK)).replace("$3", str(L)).replace("$4", fp(1)))   # A holds the row lock, uncommitted
+        bounded = "SET lock_timeout = '20s';\n" + reserve_sql.replace("$1", "1").replace("$2", str(BLOCK)).replace("$3", str(L)).replace("$4", fp(1))
         ex = ThreadPoolExecutor(1)
         try:
             fut = ex.submit(lambda: sql(bounded))                               # B blocks on the row lock, bounded by lock_timeout
@@ -467,9 +467,15 @@ try:
         reset_data(); register(1)
         a = subprocess.Popen(psql_cmd("dc"), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
         a.stdin.write("BEGIN;\n"); a.stdin.write(f"INSERT INTO games(id,state,config,expires_at) VALUES ('{u(1)}','ACTIVE','{{}}',now());\n"); a.stdin.write("SELECT 'ready';\n"); a.stdin.flush()
-        assert "ready" in a.stdout.readline()
-        assert reserve(1) == BLOCK                         # separate connection, own transaction, commits
-        a.stdin.write("ROLLBACK;\n\\q\n"); a.stdin.flush(); a.wait(timeout=20)
+        try:
+            assert "ready" in a.stdout.readline()
+            got = reserve(1)                               # separate connection, own transaction, commits
+        finally:
+            try:
+                a.stdin.write("ROLLBACK;\n\\q\n"); a.stdin.flush(); a.wait(timeout=20)
+            except Exception:
+                a.kill(); a.wait(timeout=20)               # termination as a fallback (CR-14)
+        assert got == BLOCK
         assert R() == BLOCK and sql("SELECT count(*) FROM games;") == "0"
 
     @test("reservation survives an application transaction aborted by an error")
@@ -642,7 +648,7 @@ try:
     @test("fingerprint uniqueness: retired key material cannot be registered again under a new identifier (CR-12)")
     def _():
         reset_data()
-        register(1, material="A"); assert reserve(1) == BLOCK
+        register(1, material="A"); assert reserve(1, material="A") == BLOCK
         seal(1, material="A")                              # key 1 superseded and sealed. Its row is never deleted
         register(2, material="A", expect_error="key_usage_fingerprint_key")   # same material under a new id: refused by the database
         register(3, material="B")                          # new material is accepted
@@ -808,17 +814,17 @@ try:
     @test("restore seals every identifier in the fingerprint history, restoring the registry for a key retired early (CR-13)")
     def _():
         reset_data()
-        register(1, material="A"); register(2, material="B"); assert reserve(2) == BLOCK
+        register(1, material="A"); register(2, material="B"); assert reserve(2, material="B") == BLOCK
         stop(); backup = work / "backup3"; shutil.copytree(data, backup); start()
-        register(3, material="C"); assert reserve(3) == BLOCK               # key 3 registered after the backup ...
+        register(3, material="C"); assert reserve(3, material="C") == BLOCK               # key 3 registered after the backup ...
         history = {1: "A", 2: "B", 3: "C"}                                  # ... then retired early and removed from the ring (history keeps it)
         stop(); shutil.rmtree(data); shutil.copytree(backup, data); start()  # restore
         assert sql("SELECT count(*) FROM key_usage WHERE key_id=3;") == "0"
         for kid, mat in history.items():                                    # S = every id in the history, before the new key
             seal(kid, material=mat)
-        assert usable(3) is False and R(3) == L
+        assert usable(3, material="C") is False and R(3) == L
         register(4, material="C", expect_error="key_usage_fingerprint_key")  # the registry backstop is back
-        assert register(4, material="D") == "4" and usable(4) is True
+        assert register(4, material="D") == "4" and usable(4, material="D") is True
 
     @test("lossless proof covers every key that can still encrypt, including STAGED keys (CR-13 rule)")
     def _():
@@ -834,24 +840,61 @@ try:
         assert lossless(pre, {1: pre[1], 2: {"reserved": 0, "sealed": False}}, [1, 2]) is False   # staged key behind
         assert lossless(pre, {1: pre[1]}, [1]) is True                      # checking only the active key would wrongly pass
 
-    @test("retry after a refused reservation: a unit returned by another request meanwhile is claimed instead of failing (CR-13 model, real reservations)")
+    @test("retry after a refused reservation: a unit returned between the refusal and the final check is claimed by the same call (CR-13, CR-14 model, real reservations)")
     def _():
         import threading
         reset_data(); register(1); set_R(1, L)                             # no further reservation is possible
         lock = threading.Lock(); st = {"allowance": 0}
-        def acquire():
+
+        def acquire(between_refusal_and_recheck=None, recheck=True):
             with lock:
                 if st["allowance"] >= 1:
-                    st["allowance"] -= 1; return True
-            if reserve(1, block=1) is not None:                            # refused: R is at the limit
+                    st["allowance"] -= 1; return "fast"
+            if reserve(1, block=1) is not None:
                 with lock: st["allowance"] += 1
-            with lock:                                                     # one more synchronous check before giving up
-                if st["allowance"] >= 1:
-                    st["allowance"] -= 1; return True
-            return False
-        assert acquire() is False                                          # nothing anywhere
-        with lock: st["allowance"] += 1                                    # another request returns an unused, already reserved unit
-        assert acquire() is True and st["allowance"] == 0
+            elif between_refusal_and_recheck:
+                between_refusal_and_recheck()                              # another request returns an unused unit now
+            if recheck:
+                with lock:                                                 # one more synchronous check before giving up
+                    if st["allowance"] >= 1:
+                        st["allowance"] -= 1; return "recheck"
+            return None
+
+        def give_back():
+            with lock: st["allowance"] += 1
+
+        assert acquire() is None                                           # nothing anywhere
+        assert acquire(give_back) == "recheck" and st["allowance"] == 0     # claimed only because of the recheck
+        assert acquire(give_back, recheck=False) is None                   # without the recheck the same scenario fails
+        st["allowance"] = 0
+
+    @test("material bound to the registry: reservation and pre-encryption check refuse a key whose loaded material differs from the registered fingerprint (CR-14)")
+    def _():
+        reset_data(); register(1, material="A"); register(2, material="B")
+        assert usable(2, material="B") is True and reserve(2, material="B") == BLOCK
+        assert usable(2, material="A") is False                            # retired material A pasted into key 2's ring entry
+        assert reserve(2, material="A") is None and R(2) == BLOCK
+
+    @test("lossless proof also covers every history key: a missing row or an undone seal is not lossless (CR-14 rule)")
+    def _():
+        def lossless(pre, restored, can_encrypt, history):
+            for k in can_encrypt:
+                if k not in restored or restored[k]["sealed"] != pre[k]["sealed"] or restored[k]["reserved"] < pre[k]["reserved"]:
+                    return False
+            for k in history:
+                if k not in restored or restored[k]["fp"] != pre[k]["fp"] or restored[k]["sealed"] != pre[k]["sealed"]:
+                    return False
+            return True
+        pre = {1: {"reserved": L, "sealed": True, "fp": "a"}, 2: {"reserved": 50, "sealed": False, "fp": "b"}}
+        assert lossless(pre, dict(pre), [2], [1, 2]) is True
+        assert lossless(pre, {2: pre[2]}, [2], [1, 2]) is False                                   # history key 1 row missing
+        assert lossless(pre, {1: {"reserved": L, "sealed": False, "fp": "a"}, 2: pre[2]}, [2], [1, 2]) is False   # seal undone
+
+    @test("retired keys keep their row for ever; the material stays refused under a new identifier (CR-14)")
+    def _():
+        reset_data(); register(1, material="A"); seal(1, material="A")
+        assert sql("SELECT count(*) FROM key_usage WHERE key_id=1;") == "1"   # retirement never deletes the row
+        register(9, material="A", expect_error="key_usage_fingerprint_key")
 
     def tool(name, override):
         cand = override or (str(SB / name) if (SB / name).exists() else None)
