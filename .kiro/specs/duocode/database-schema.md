@@ -182,6 +182,7 @@ CREATE TABLE ring_state (                               -- admission gate for re
   required_key_ids  smallint[] NOT NULL DEFAULT '{}',   -- every reader must have loaded all of these before it may serve
   updated_at        timestamptz NOT NULL DEFAULT now()
 );
+INSERT INTO ring_state DEFAULT VALUES;                  -- the singleton row exists from the moment the schema exists (CR-19)
 
 CREATE TABLE schema_migrations (
   version     integer PRIMARY KEY,
@@ -423,7 +424,8 @@ On a clean shutdown it deletes its own row. Rows of processes that are gone are 
 ```sql
 UPDATE ring_state SET required_key_ids = array_append(array_remove(required_key_ids, $1::smallint), $1::smallint),
                       updated_at = now()
-WHERE id;
+WHERE id
+RETURNING required_key_ids;                           -- zero rows is an error (CR-19)
 ```
 
 Then it refuses unless the roster query below returns `true`. `$1` is `N`, the operator's expected number of live readers, and `$2` is the staged key:
@@ -451,9 +453,21 @@ SELECT NOT EXISTS (SELECT 1 FROM pg_locks
    AS no_readers;
 ```
 
-Offline activation also commits the same `required_key_ids` update before it changes the ring. Offline activation never runs while any reader is live. When a key is retired (removed from the ring), `keys:retire` removes it from `required_key_ids` under the ring lock. Online activation never accepts `--offline`. Both run under the ring single-writer lock.
+Offline activation also commits the same `required_key_ids` update before it changes the ring. Every statement that changes `ring_state` uses `RETURNING`, and the tool treats zero returned rows as an error, so a missing singleton can never be mistaken for success (CR-19).
 
-**Privileges.** The application role (used by `app`, `cleanup` and `reencrypt`) has `SELECT`, `INSERT`, `UPDATE` and `DELETE` on `instance_ring_reports`. The upsert reads columns through `EXCLUDED`, and cleanup's `DELETE` reads `reported_at`. The `keymgmt` role has `SELECT` on it. `pg_locks` is readable by every role, and advisory locks need no table privilege.
+**Reconciling the gate after a restore (CR-19).** A restored `ring_state` can be out of date in both directions: it can still require a key that has since been retired and is absent from the newest ring (which would refuse every reader, including `keyverify`), or a staged key that the recovery has just abandoned (which would refuse every restarted reader). `keys:reconcile-gate`, run by `keymgmt` under the ring lock and only while no reader is live, replaces the set with exactly the key ids that the newest ring loads (`ACTIVE`, `STAGED` that is not abandoned, `DECRYPT_ONLY`), `$1`:
+
+```sql
+UPDATE ring_state SET required_key_ids = $1::smallint[], updated_at = now()
+WHERE id
+  AND NOT EXISTS (SELECT 1 FROM pg_locks
+                  WHERE locktype = 'advisory' AND classid IN (4242002, 4242003) AND granted)
+RETURNING required_key_ids;
+```
+
+Before running it, the tool confirms that every key id referenced by restored ciphertext (`secret_codes.key_id`, `guesses.key_id`, `token_rotations.token_key_id`) is in `$1`, using `SELECT DISTINCT` on those columns. If any is missing, the data under it cannot be decrypted by any reader, the tool stops, and the operator follows `deployment.md` section 6.2. The restore procedure runs the reconciliation twice: before `keyverify`, and again after the new key is activated and any staged key is abandoned. Offline activation never runs while any reader is live. When a key is retired (removed from the ring), `keys:retire` removes it from `required_key_ids` under the ring lock. Online activation never accepts `--offline`. Both run under the ring single-writer lock.
+
+**Privileges.** The application role (used by `app`, `cleanup` and `reencrypt`) has `SELECT`, `INSERT`, `UPDATE` and `DELETE` on `instance_ring_reports`, and `SELECT` on `ring_state` for its admission check. The upsert reads columns through `EXCLUDED`, and cleanup's `DELETE` reads `reported_at`. The `keymgmt` role has `SELECT` on `instance_ring_reports` and `SELECT` and `UPDATE` on `ring_state`. The `keyverify` role has `SELECT` on `ring_state` for its admission check (CR-19). `pg_locks` is readable by every role, and advisory locks need no table privilege.
 
 ### 6.3 Key lifecycle: rotation completed at or after a threshold, and stale allowances (RD-14, CR-10, CR-12)
 

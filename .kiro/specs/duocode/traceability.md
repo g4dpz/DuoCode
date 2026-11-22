@@ -141,6 +141,7 @@ Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and 
 | CR-6 | R19.1 | `README.md` |
 | CR-7 | R19.5 | `revision-3.1-review-package.md` |
 | CR-8 | R9.4, R9.8 | `database-schema.md` `rematch_markers` |
+| CR-19 | R10.13, R10.14 | `database-schema.md` 6.2a, `deployment.md` 2.1, 6.1, `security-assessment.md` 3.6, `test-strategy.md` TS-ENC |
 | CR-18 | R10.10, R10.14 | `database-schema.md` 6.2a, `design.md` 8.2, `deployment.md` 2.1, `test-strategy.md` TS-ENC and TS-CONC-29 |
 | CR-17 | R10.14 | `database-schema.md` 6.2a, `deployment.md` 2.1, 6.1, 6.4, `test-strategy.md` TS-ENC |
 | CR-16 | R10.14 | `database-schema.md` 6.2a, `deployment.md` 2.1, 6.4, `test-strategy.md` TS-ENC |

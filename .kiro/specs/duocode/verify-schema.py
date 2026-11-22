@@ -114,6 +114,7 @@ try:
     @test("DDL applies to an empty database")
     def _():
         assert sql("SELECT count(*) FROM information_schema.tables WHERE table_schema='public';") == "14"
+        assert sql("SELECT count(*) FROM ring_state;") == "1"        # the singleton is created by the schema itself (CR-19)
 
     @test("at most two seats per game, seat 3 rejected")
     def _():
@@ -267,7 +268,8 @@ try:
     offline_sql = next(b for b in blocks if "AS no_readers" in b)
     presence_sql = next(b for b in blocks if "SELECT pg_advisory_lock(4242002, $1);" in b).strip()
     admission_sql = next(b for b in blocks if "AS admitted FROM ring_state" in b).strip()
-    require_sql = next(b for b in blocks if "UPDATE ring_state SET required_key_ids" in b).strip()
+    require_sql = next(b for b in blocks if "UPDATE ring_state SET required_key_ids = array_append" in b).strip()
+    reconcile_sql = next(b for b in blocks if "UPDATE ring_state SET required_key_ids = $1::smallint[]" in b).strip()
     L = 2 ** 30
     BLOCK = 1024
 
@@ -1012,8 +1014,8 @@ try:
 
     @test("admission gate: after activation commits the staged key, a reader without it is refused; a reader admitted just before is counted and blocks until it reports the key (CR-18)")
     def _():
-        sql("TRUNCATE instance_ring_reports; DELETE FROM ring_state; INSERT INTO ring_state DEFAULT VALUES;")
-        sql(require_sql.replace("$1", "1"))                              # key 1 required already
+        sql("TRUNCATE instance_ring_reports; UPDATE ring_state SET required_key_ids = '{}';")   # the row comes from the DDL
+        assert sql(require_sql.replace("$1", "1")).strip() != ""         # RETURNING: exactly one row changed
         def admit(conn_cmds, keys):
             return conn_cmds + "\n" + admission_sql.replace("$1", "ARRAY[" + ",".join(map(str, keys)) + "]::smallint[]")
         def report(pid, keys):
@@ -1072,6 +1074,43 @@ try:
         assert attempt(c2, fail=False) is True
         assert inst.invocations == 2 <= R(1) == 2
         assert sql("SELECT count(*) FROM secret_codes;") == "1"
+
+    @test("gate privileges: keymgmt updates the gate; application and keyverify roles can only run the admission check (CR-19)")
+    def _():
+        sql("DROP ROLE IF EXISTS t_km; DROP ROLE IF EXISTS t_app; DROP ROLE IF EXISTS t_kv;")
+        sql("CREATE ROLE t_km; GRANT SELECT, UPDATE ON ring_state TO t_km; CREATE ROLE t_app; GRANT SELECT ON ring_state TO t_app; CREATE ROLE t_kv; GRANT SELECT ON ring_state TO t_kv;")
+        adm = admission_sql.replace("$1", "ARRAY[1,2]::smallint[]")
+        try:
+            assert sql("SET ROLE t_km;\n" + require_sql.replace("$1", "2")).strip() != ""
+            for r in ("t_app", "t_kv"):
+                assert sql(f"SET ROLE {r};\n" + adm).strip() in ("t", "f")
+                sql(f"SET ROLE {r};\n" + require_sql.replace("$1", "3"), expect_error="permission denied")
+        finally:
+            sql("REVOKE ALL ON ring_state FROM t_km, t_app, t_kv; DROP ROLE t_km; DROP ROLE t_app; DROP ROLE t_kv;")
+
+    @test("gate reconciliation after restore: stale retired and abandoned requirements are replaced by the newest ring's keys; refused while a reader is live (CR-19)")
+    def _():
+        reset_data(); sql("TRUNCATE instance_ring_reports;")
+        sql("UPDATE ring_state SET required_key_ids = ARRAY[1,2,5,9]::smallint[];")   # restored: 9 retired since, 5 a staged key now abandoned
+        newest_ring = [1, 2, 6]                                                         # what the newest ring loads after recovery
+        new_game(1); new_player(11, 1, 1)
+        sql(f"INSERT INTO secret_codes(player_id,key_id,ciphertext) VALUES ('{u(11)}',2,decode(repeat('01',32),'hex'));")
+        referenced = {int(x) for x in sql("SELECT DISTINCT key_id FROM secret_codes UNION SELECT DISTINCT key_id FROM guesses UNION SELECT DISTINCT token_key_id FROM token_rotations WHERE token_key_id IS NOT NULL;").split()}
+        assert referenced <= set(newest_ring)                            # the tool's pre-check passes
+        arr = "ARRAY[" + ",".join(map(str, newest_ring)) + "]::smallint[]"
+        adm_old = admission_sql.replace("$1", arr)
+        assert sql(adm_old) == "f"                                       # before reconciliation every reader with the newest ring is refused
+        R1 = session(presence_sql.replace("$1", "41"))                   # a live reader
+        try:
+            assert sql(reconcile_sql.replace("$1", arr)).strip() == ""    # refused while any reader is live
+        finally:
+            finish(R1)
+        assert sql(reconcile_sql.replace("$1", arr)).strip() == "{1,2,6}"
+        assert sql(adm_old) == "t"                                       # verifier and restarted readers are admitted
+        assert not ({9} <= set(newest_ring))                             # a referenced key outside the ring would stop the tool:
+        sql(f"UPDATE secret_codes SET key_id = 9;")
+        referenced = {int(x) for x in sql("SELECT DISTINCT key_id FROM secret_codes;").split()}
+        assert not (referenced <= set(newest_ring))
 
     def tool(name, override):
         cand = override or (str(SB / name) if (SB / name).exists() else None)

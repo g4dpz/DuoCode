@@ -71,7 +71,7 @@ Your point was right. The revision 3.1 draft refused a reservation only after th
 
 **Files changed for CR-9:** `database-schema.md`, `design.md`, `security-assessment.md`, `deployment.md`, `test-strategy.md`, `requirements.md` (R10.10, R10.13, CR-9, RD-14, glossary), `traceability.md`, `tasks.md`, `verify-schema.py`, `check-consistency.py`, and this package.
 
-## 3B. Rotation after 2^28 (CR-10) and PR #2 review findings (CR-11 to CR-18)
+## 3B. Rotation after 2^28 (CR-10) and PR #2 review findings (CR-11 to CR-19)
 
 ### Rotation completed after the 2^28 threshold (your clarification)
 
@@ -210,6 +210,16 @@ No inline findings. Copilot marked the PR "Needs a closer look" and named three 
 | 2 | The verifier handshake is unbounded | **Real, as an availability risk.** A hung `keyverify` blocked activation for ever, and `keymgmt` could wait without limit. Fixed: `keyverify` takes the ring lock with a shared try-lock and exits if a ring change is running, and it has a hard deadline (`KEYVERIFY_MAX_SECONDS`). `keymgmt` waits at most `KEYMGMT_LOCK_WAIT_SECONDS` and then names the holders. Tested on PostgreSQL |
 | 3 | Encryption-unit accounting has gaps during retries | **Real gap in the wording.** The transaction helper's single retry and the re-encryption retry did not say they needed a new claim, so a retry could have encrypted a second time against a unit already spent. Fixed: every retry is a fresh attempt with a new claim and a new pre-encryption check, spent units are never returned, and a unit is consumed before the cipher is called. Tested with a real rollback |
 
+### Ninth Copilot review of PR #2 (commit `62f3434`): findings and dispositions (CR-19)
+
+3 new findings, all accepted. All concern the admission gate added in round 8.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | The DDL did not create the `ring_state` row, and the test masked this by inserting its own | **Real defect, fixed.** The DDL now inserts the singleton row. The DDL test checks it exists, and the admission test no longer creates it. Every gate update uses `RETURNING`, and zero rows is an error |
+| 2 | The roles had no rights on `ring_state` | Fixed and tested under restricted roles. `keymgmt` gets `SELECT` and `UPDATE`. The application and `keyverify` roles get `SELECT` only. `keymgmt` also gets `SELECT` on the `key_id` columns it needs for the reconciliation pre-check |
+| 3 | A restored gate can still require a retired key or an abandoned staged key, which would block the verifier and every restarted reader | **Real gap, fixed.** New `keys:reconcile-gate`. It runs offline under the ring lock, confirms that every key referenced by restored ciphertext is in the newest ring, and sets the gate to that ring's keys. The restore procedure runs it before verification and again after the new key is activated. Tested |
+
 ## 4. Files (revision 3.1 branch, for history)
 
 Added: `.kiro/specs/duocode/revision-3.1-review-package.md` (replaces the revision 3 package), `.kiro/specs/duocode/check-consistency.py`, `.kiro/specs/duocode/verify-schema.py`, `CONTRIBUTING.md`, `LICENSE`, `NOTICE`.
@@ -225,13 +235,13 @@ Redocly lint of `openapi/openapi.yaml`: **valid, 0 errors, 0 warnings.** The Ope
 
 ### 5.2 Database schema, constraint and reservation tests
 
-`verify-schema.py` extracts the DDL, the reservation, registration, sealing and pre-encryption-check statements **from `database-schema.md`**, so the tested SQL is the specified SQL. It applies them to a throwaway cluster and runs 66 tests.
+`verify-schema.py` extracts the DDL, the reservation, registration, sealing and pre-encryption-check statements **from `database-schema.md`**, so the tested SQL is the specified SQL. It applies them to a throwaway cluster and runs 68 tests.
 
 | Server | Result |
 |---|---|
-| PostgreSQL 15.8 (Homebrew), with `pg_dump` and `pg_restore` | **66 of 66 passed**, two runs |
-| PostgreSQL 16.16 embedded build (no `pg_dump` of its version available) | **65 of 65 passed, 1 skipped** (the logical restore test), two runs |
-| **PostgreSQL 16.16 official `postgres:16` image (Debian, Docker Desktop)**, image digest `sha256:3950ad7c3148ca2175ef1b6c36c9efbf78957ae8fbe8b3a5d7c35af50500382f`, with its own `pg_dump` and `pg_restore` | **66 of 66 passed**, one run |
+| PostgreSQL 15.8 (Homebrew), with `pg_dump` and `pg_restore` | **68 of 68 passed**, two runs |
+| PostgreSQL 16.16 embedded build (no `pg_dump` of its version available) | **67 of 67 passed, 1 skipped** (the logical restore test), two runs |
+| **PostgreSQL 16.16 official `postgres:16` image (Debian, Docker Desktop)**, image digest `sha256:3950ad7c3148ca2175ef1b6c36c9efbf78957ae8fbe8b3a5d7c35af50500382f`, with its own `pg_dump` and `pg_restore` | **68 of 68 passed**, one run |
 
 What the tests cover (all use the real PostgreSQL statements and real concurrent connections, not a mocked counter):
 
@@ -274,9 +284,11 @@ What the tests cover (all use the real PostgreSQL statements and real concurrent
 | **Admission gate (new, CR-18)** | After activation committed the staged key, a reader with the old ring was refused. A reader admitted just before was counted and blocked activation until it reported the key |
 | **Bounded locks (new, CR-18)** | `keyverify`'s shared try-lock failed during a ring change, `keymgmt`'s exclusive try-lock failed during a verification, and both succeeded once the other was gone |
 | **Retry is a fresh attempt (new, CR-18 model)** | After a real rollback, the spent unit could not be reused. The retry claimed again, and invocations stayed within the reserved total |
+| **Gate singleton and privileges (new, CR-19)** | The schema creates the `ring_state` row. `keymgmt` could update it. The application and `keyverify` roles could run the admission check and were refused updates |
+| **Gate reconciliation after restore (new, CR-19)** | A restored gate requiring a retired key and an abandoned staged key refused every reader. It was reconciled to the newest ring's keys, after which readers were admitted. Reconciliation was refused while a reader was live, and the referenced-key pre-check caught ciphertext under a key outside the ring |
 | **Role separation (CR-16, extended CR-17)** | `keymgmt` could change `key_usage` and was refused `secret_codes` and `guesses`. `keyverify` could read them and join them to `players(id, game_id)`, and was refused nicknames and any change |
 
-The rest of the 66 tests are the constraint tests (seats, nicknames and bidirectional controls, guess chain, credential binding, one rematch ever, idempotency, rotation record, rate limits, cleanup, invariant check, start-up validation rule).
+The rest of the 68 tests are the constraint tests (seats, nicknames and bidirectional controls, guess chain, credential binding, one rematch ever, idempotency, rotation record, rate limits, cleanup, invariant check, start-up validation rule).
 
 **Limits, stated plainly.** No application exists. The instance in these tests is a small model of the allowance and claim rules. Its reservations, seals and checks go to real PostgreSQL. The tests prove the SQL, the constraints and the policy. They do not prove that a future vault follows the policy, which is why the (APP) tests in `test-strategy.md` are required in Phase 4. The staged rolling rotation (zero decrypt failures), the re-encryption recount, the claim-before-check order in the vault and the per-role health reporting are specified as (APP) tests and have not been run.
 
@@ -303,7 +315,7 @@ PASS C15 no Phase 1 gate or task is marked approved in tasks.md
 PASS C16 OpenAPI constrains codes to 4 symbols from 1..6
 PASS C17 nickname forbidden character classes agree between OpenAPI and database CHECK (NUL aside)
 PASS C18 OpenAPI rotation key pattern accepts v4 UUIDs and rejects v1 and wrong-variant values
-PASS C19 every decision in the register has a row in the traceability decision map (76 decisions)
+PASS C19 every decision in the register has a row in the traceability decision map (77 decisions)
 PASS C20 no decision recorded as approved in the register is still described as pending elsewhere
 PASS C21 no application code, database migration or implementation directory exists
 PASS C23 key usage design is consistent: one authoritative row per key, CHECK at 2^30, thresholds 2^27 / 2^28 / 2^30, strict statement, terms defined, sharding only mentioned as replaced
@@ -348,4 +360,4 @@ Inputs only you can give. I have not invented any of them:
 3. LI-1 to LI-4 (section 6).
 4. The (APP) tests and the restore and rotation drills with real tools (section 5.4).
 5. Drafting proposals not explicitly approved: proxy access-log retention (14 days, no IP by default), backup recipients, a named owner for the Caddy build, the 7-day target for critical proxy security upgrades, re-verification of the Caddy version pins at build time. The privacy notice and UK GDPR wording remain tasks.
-6. A ninth Copilot review of the CR-18 corrections is requested (see the report with PR #2).
+6. A tenth Copilot review of the CR-19 corrections is requested (see the report with PR #2).
