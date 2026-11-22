@@ -387,6 +387,13 @@ for c in sorted(canon-set(re.findall(kcmd,lay))): pr.append(f'design.md section 
 t92=re.search(r'^- \[[ x]\] 9\.2a .*$',files['tasks.md'],re.M)
 for c in sorted(canon-set(re.findall(kcmd,t92.group(0) if t92 else ''))): pr.append(f'tasks.md 9.2a does not list {c}')
 check(f'C28 every key command used in the specification is in the deployment.md 2.1 list, the design layout and task 9.2a ({len(canon)} commands)',pr)
+# 29 headings quoted by name in requirements.md exist
+pr=[]
+heads=set(h.strip() for h in re.findall(r'^#{2,4} (.+)$',req,re.M))
+for m in re.finditer(r'(?:listed under|see) "([^"]+)"',req):
+    q=m.group(1)
+    if not any(h==q or h.startswith(q+' (') for h in heads): pr.append(f'requirements.md quotes the heading "{q}", which does not exist')
+check('C29 every heading quoted by name in requirements.md exists',pr)
 # 22 OpenAPI lint
 import shutil as _sh
 if _sh.which('npx'):
