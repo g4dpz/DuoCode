@@ -71,7 +71,7 @@ Your point was right. The revision 3.1 draft refused a reservation only after th
 
 **Files changed for CR-9:** `database-schema.md`, `design.md`, `security-assessment.md`, `deployment.md`, `test-strategy.md`, `requirements.md` (R10.10, R10.13, CR-9, RD-14, glossary), `traceability.md`, `tasks.md`, `verify-schema.py`, `check-consistency.py`, and this package.
 
-## 3B. Rotation after 2^28 (CR-10) and PR #2 review findings (CR-11 to CR-20)
+## 3B. Rotation after 2^28 (CR-10) and PR #2 review findings (CR-11 to CR-21)
 
 ### Rotation completed after the 2^28 threshold (your clarification)
 
@@ -229,6 +229,15 @@ No inline findings. Copilot marked the PR "Needs a closer look" and named three 
 | 1 | The grant named a `key_id` column on `token_rotations`, which has `token_key_id` | **Real defect, fixed.** The grant now names the actual columns, as column grants. A PostgreSQL test checks that the grants are valid, the pre-check runs, and ciphertext is refused |
 | 2 | The restore restarted the readers before the second reconciliation, which refuses while readers are live | **Real defect, fixed.** Abandonment, reconciliation and verification now all run while every service is stopped. The services start once, in step 9, as fresh processes. The security assessment and R10.13 say the same |
 
+### Eleventh Copilot review of PR #2 (commit `41e7644`) and close of the review loop (CR-21)
+
+No inline findings. Copilot marked the PR "Needs a closer look" and named two concerns. By owner decision (option B), this is the last fix round on PR #2, followed by one regression-check review. Further procedural findings go to Phase 9.
+
+| # | Concern | Disposition |
+|---|---|---|
+| 1 | Recovery can fail before migrations run | **Real defect, fixed.** Migrations ran at step 7 of the restore, after steps that use `ring_state`, `instance_ring_reports` and the newer `key_usage` columns. They now run at step 3, straight after the database is restored. The later steps are renumbered and their cross-references updated |
+| 2 | A key could be activated while a reader lacks it | **Not reproduced from the specification, deferred.** Copilot gave no path. Recorded as task 9.6a, to be settled against the real tooling, starting with the window between a reader taking its presence lock and completing its admission check |
+
 ## 4. Files (revision 3.1 branch, for history)
 
 Added: `.kiro/specs/duocode/revision-3.1-review-package.md` (replaces the revision 3 package), `.kiro/specs/duocode/check-consistency.py`, `.kiro/specs/duocode/verify-schema.py`, `CONTRIBUTING.md`, `LICENSE`, `NOTICE`.
@@ -370,4 +379,4 @@ Inputs only you can give. I have not invented any of them:
 3. LI-1 to LI-4 (section 6).
 4. The (APP) tests and the restore and rotation drills with real tools (section 5.4).
 5. Drafting proposals not explicitly approved: proxy access-log retention (14 days, no IP by default), backup recipients, a named owner for the Caddy build, the 7-day target for critical proxy security upgrades, re-verification of the Caddy version pins at build time. The privacy notice and UK GDPR wording remain tasks.
-6. An eleventh Copilot review of the CR-20 corrections is requested (see the report with PR #2).
+6. The Copilot review loop on PR #2 is closed by owner decision after round 11. One regression-check review of the CR-21 commit is requested. Task 9.6a carries the one unresolved concern.
