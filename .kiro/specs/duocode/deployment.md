@@ -44,11 +44,13 @@ Ring changes need write access to the ring and to the key backup store. The appl
 |---|---|---|
 | Ring source file (host path, owned by a dedicated key-management user, mode 0600, directory 0700) | Read and write | No access to the source. They receive it read-only as the Docker secret `duocode_code_keyring` at start-up |
 | Key backup store credentials | Yes, its own Docker secret | No |
-| Database | Its own role: may insert and update `key_usage` and take the ring advisory lock. No access to game tables | Application role, unchanged |
+| Database | Its own role `duocode_keymgmt`: `SELECT`, `INSERT` and `UPDATE` on `key_usage`, `SELECT` on `instance_ring_reports`, and the ring advisory lock. No access to game tables | Application role, plus `INSERT` and `UPDATE` on `instance_ring_reports` for its own reports |
 | Network | Database and backup store only | Unchanged |
 | Started by | An operator, on demand (`docker compose run --rm keymgmt <command>`) | Compose |
 
-- Commands: `keys:generate`, `keys:activate`, `keys:seal`, `keys:abandon`, `keys:verify`. Every command except `keys:verify` takes the ring single-writer lock (`pg_advisory_lock` on a fixed key) for its whole run, writes the ring with the version check described in `security-assessment.md` section 3.6, backs up the new ring before releasing the lock, and only then exits.
+- Commands: `keys:generate`, `keys:activate`, `keys:seal`, `keys:abandon`. Every command takes the ring single-writer lock (`pg_advisory_lock` on a fixed key) for its whole run, writes the ring with the version check described in `security-assessment.md` section 3.6, backs up the new ring before releasing the lock, and only then exits.
+- `keys:activate` refuses to activate a staged key until every running instance acknowledges it through `instance_ring_reports` (`database-schema.md` section 6.2a). The operator passes the expected instance count. The job needs no access to the admin listener and no admin credential (CR-16).
+- `keys:verify` runs in a **separate `keyverify` job**, not in `keymgmt`: it needs to read ciphertext from game tables, which the ring-writing job must not see. `keyverify` has a read-only database role (`SELECT` on `key_usage`, `secret_codes`, `guesses`, `idempotency_keys`, `token_rotations`), reads the ring read-only like the application, has no backup-store access and cannot change anything (CR-16).
 - The job never prints key material. Output: identifier, status, fingerprint prefix, ring generation.
 - Distribution: after a ring change, the operator restarts the instances (the phases in 6.4). Each instance reads the new ring read-only at start-up. The application's permissions are not changed by this.
 - The job image is the application image, run with different Deno permissions (`--allow-read` and `--allow-write` limited to the ring directory, `--allow-net` limited to the database and the backup store).
@@ -230,10 +232,10 @@ The same procedure applies whether the rotation is routine, prompted by the warn
 **Phase 1, stage.**
 1. `deno task keys:generate`, run in the `keymgmt` job (section 2.1). It writes the key material directly into the protected ring source file and prints only the identifier, status and fingerprint prefix, never the material. The identifier is above `highestKeyId`. The tool rejects duplicate or previously used key material, registers the key (row and fingerprint), reserves at least one unit, encrypts the self-test value, and prints the ring entry.
 2. Add the key to the ring as `STAGED` (it decrypts, never encrypts), raise the ring `generation`, and back up the ring and its fingerprint history (section 5).
-3. **Restart every instance** (`app`, `cleanup`, `reencrypt` and `keys` jobs), one after another. Check that every instance reports the new generation in `duocode_key_ring_generation`.
+3. **Restart every instance** (`app`, `cleanup`, `reencrypt` and `keys` jobs), one after another. Each instance reports its loaded ring in `instance_ring_reports` at start-up. `keys:activate` in phase 2 checks those reports (CR-16).
 
 **Phase 2, activate.**
-4. Change the ring: the new key `ACTIVE`, the previous key `DECRYPT_ONLY` with `deactivatedAt` set, `generation` raised. Back up the ring.
+4. Run `keys:activate <new id> --expect <N>`. It refuses unless all `N` running instances have reported the staged key in the last two refresh intervals (`database-schema.md` 6.2a). It then changes the ring: the new key `ACTIVE`, the previous key `DECRYPT_ONLY` with `deactivatedAt` set, `generation` raised. Back up the ring.
 5. **Restart every instance** again, one after another. During this rolling restart some instances encrypt with the previous key and some with the new one. Both keys are in every ring and unsealed, so every instance can decrypt both. Allowances live in memory only, so a restarted instance holds none for the previous key. Check that every instance reports the new generation.
 
 **Phase 3, seal.**

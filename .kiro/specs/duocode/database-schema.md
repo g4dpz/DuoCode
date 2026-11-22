@@ -170,6 +170,13 @@ CREATE TABLE key_usage (                                  -- ONE authoritative r
   CHECK (NOT sealed OR reserved = 1073741824)                   -- a sealed key is always at the limit
 );
 
+CREATE TABLE instance_ring_reports (                    -- which ring each running instance has loaded (CR-16)
+  instance_id      uuid PRIMARY KEY,                    -- random per process start
+  ring_generation  integer NOT NULL CHECK (ring_generation >= 1),
+  loaded_key_ids   smallint[] NOT NULL,                 -- every key id the instance can decrypt (ACTIVE, STAGED, DECRYPT_ONLY)
+  reported_at      timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE schema_migrations (
   version     integer PRIMARY KEY,
   name        text NOT NULL,
@@ -376,6 +383,27 @@ Consequence of G1 to G4: the number of encryption invocations under a key can ne
 - `keys:verify` checks the invariant `ciphertext rows under the key <= R` per key and fails if it is violated.
 - The reservation statement runs on a separate connection from the request transaction, before it begins. It holds the key row lock for one statement and never while waiting for any other lock. It may wait for transactions that hold the row in share mode for their commit-time check, which is short and cannot form a cycle, because those transactions never wait for anything the reserving connection holds (`design.md` section 8.2).
 
+### 6.2a Ring acknowledgement for staged activation (CR-16)
+
+Every instance upserts its row in `instance_ring_reports` at start-up and on every refresh (`KEY_USAGE_REFRESH_SECONDS`):
+
+```sql
+INSERT INTO instance_ring_reports (instance_id, ring_generation, loaded_key_ids, reported_at)
+VALUES ($1, $2, $3, now())
+ON CONFLICT (instance_id) DO UPDATE SET ring_generation = EXCLUDED.ring_generation,
+  loaded_key_ids = EXCLUDED.loaded_key_ids, reported_at = now();
+```
+
+`keys:activate <key_id> --expect <N>` refuses to activate unless this returns `true`, where `N` is the number of instances the operator runs (the Compose scale of every service that can encrypt or decrypt), `$2` is the staged key and `$3` is the freshness window (twice the refresh interval):
+
+```sql
+SELECT count(*) = $1 AND bool_and($2 = ANY (loaded_key_ids)) AS all_staged
+FROM instance_ring_reports
+WHERE reported_at > now() - $3::interval;
+```
+
+An instance that is running but not reporting is not counted, so the count falls short of `N` and activation is refused. An instance that is stopped loads the newest ring when it starts. Rows not refreshed for a day are deleted by cleanup. The application role may insert and update this table and nothing else new. The `keymgmt` role may only read it.
+
 ### 6.3 Key lifecycle: rotation completed at or after a threshold, and stale allowances (RD-14, CR-10, CR-12)
 
 This section is the single description of what happens to a key's allowances when the key stops being the active key. `security-assessment.md` section 3.6a and `deployment.md` sections 6.1 and 6.4 refer to it.
@@ -426,6 +454,9 @@ DELETE FROM rate_limits
 WHERE ctid IN (SELECT ctid FROM rate_limits
                WHERE refilled_at < clock_timestamp() - interval '1 hour'
                FOR UPDATE SKIP LOCKED);
+
+DELETE FROM instance_ring_reports                   -- reports of instances gone for a day (CR-16)
+WHERE reported_at < clock_timestamp() - interval '1 day';
 ```
 
 Properties:

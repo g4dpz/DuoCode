@@ -113,7 +113,7 @@ try:
     # ----- constraints ------------------------------------------------------
     @test("DDL applies to an empty database")
     def _():
-        assert sql("SELECT count(*) FROM information_schema.tables WHERE table_schema='public';") == "12"
+        assert sql("SELECT count(*) FROM information_schema.tables WHERE table_schema='public';") == "13"
 
     @test("at most two seats per game, seat 3 rejected")
     def _():
@@ -262,6 +262,8 @@ try:
     seal_sql = re.search(r"`(INSERT INTO key_usage \(key_id, fingerprint, reserved, sealed\) VALUES \(\$1, \$2, 1073741824, true\) ON CONFLICT \(key_id\) DO UPDATE SET reserved = 1073741824, sealed = true;)`", spec_text).group(1)
     check_sql = next(b for b in blocks if "SELECT NOT sealed AND fingerprint = $2 AS usable FROM key_usage" in b)
     commit_check_sql = next(b for b in blocks if "SELECT sealed FROM key_usage WHERE key_id = $1 FOR SHARE" in b).strip()
+    report_sql = next(b for b in blocks if "INSERT INTO instance_ring_reports" in b)
+    activation_sql = next(b for b in blocks if "AS all_staged" in b)
     L = 2 ** 30
     BLOCK = 1024
 
@@ -938,6 +940,36 @@ try:
         finally:
             finish(A, f"SELECT pg_advisory_unlock({lock_key});")
         assert sql(f"SELECT pg_try_advisory_lock({lock_key}); SELECT pg_advisory_unlock({lock_key});").splitlines()[0] == "t"
+
+    @test("staged-activation acknowledgement: true only when exactly N fresh reports all include the staged key (CR-16)")
+    def _():
+        sql("TRUNCATE instance_ring_reports;")
+        def report(iid, gen, keys, age_s=0):
+            sql(report_sql.replace("$1", f"'{u(iid)}'").replace("$2", str(gen)).replace("$3", "ARRAY[" + ",".join(map(str, keys)) + "]::smallint[]"))
+            if age_s:
+                sql(f"UPDATE instance_ring_reports SET reported_at = now() - interval '{age_s} seconds' WHERE instance_id = '{u(iid)}';")
+        def all_staged(n, key, window="60 seconds"):
+            return sql(activation_sql.replace("$1", str(n)).replace("$2", str(key)).replace("$3", f"'{window}'")) == "t"
+        report(1, 8, [1, 2]); report(2, 8, [1, 2])
+        assert all_staged(2, 2) is True
+        assert all_staged(3, 2) is False                   # one expected instance has not reported
+        report(3, 7, [1]); assert all_staged(3, 2) is False   # an instance without the staged key
+        report(3, 8, [1, 2]); assert all_staged(3, 2) is True
+        report(2, 8, [1, 2], age_s=600); assert all_staged(3, 2) is False   # a stale report does not count
+
+    @test("role separation: keymgmt can change key_usage but cannot read game ciphertext; keyverify can read but not change (CR-16)")
+    def _():
+        sql("DROP ROLE IF EXISTS duocode_keymgmt; DROP ROLE IF EXISTS duocode_keyverify;")
+        sql("CREATE ROLE duocode_keymgmt; GRANT SELECT, INSERT, UPDATE ON key_usage TO duocode_keymgmt; GRANT SELECT ON instance_ring_reports TO duocode_keymgmt;")
+        sql("CREATE ROLE duocode_keyverify; GRANT SELECT ON key_usage, secret_codes, guesses, idempotency_keys, token_rotations TO duocode_keyverify;")
+        try:
+            sql("SET ROLE duocode_keymgmt; SELECT count(*) FROM key_usage; UPDATE key_usage SET reserved = reserved WHERE false; SELECT count(*) FROM instance_ring_reports;")
+            sql("SET ROLE duocode_keymgmt; SELECT count(*) FROM secret_codes;", expect_error="permission denied")
+            sql("SET ROLE duocode_keymgmt; SELECT count(*) FROM guesses;", expect_error="permission denied")
+            sql("SET ROLE duocode_keyverify; SELECT count(*) FROM secret_codes; SELECT count(*) FROM guesses; SELECT count(*) FROM key_usage;")
+            sql("SET ROLE duocode_keyverify; UPDATE key_usage SET reserved = reserved WHERE false;", expect_error="permission denied")
+        finally:
+            sql("REVOKE ALL ON ALL TABLES IN SCHEMA public FROM duocode_keymgmt, duocode_keyverify; DROP ROLE duocode_keymgmt; DROP ROLE duocode_keyverify;")
 
     def tool(name, override):
         cand = override or (str(SB / name) if (SB / name).exists() else None)

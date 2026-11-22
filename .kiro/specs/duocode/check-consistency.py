@@ -264,7 +264,7 @@ check('C23 key usage design is consistent: one authoritative row per key, CHECK 
 vs=open(d+'verify-schema.py').read()
 pr=[]
 if '(HERE / "database-schema.md")' not in vs: pr.append('verify-schema.py does not read database-schema.md')
-for name in ('reserve_sql','register_sql','check_sql','commit_check_sql'):
+for name in ('reserve_sql','register_sql','check_sql','commit_check_sql','report_sql','activation_sql'):
     m=re.search(r'^\s*'+name+r'\s*=\s*(.+)$',vs,re.M)
     if not m: pr.append(f'{name} is not assigned'); continue
     if not m.group(1).startswith('next(b for b in blocks if'): pr.append(f'{name} is not extracted from the specification SQL blocks: {m.group(1)[:60]}')
@@ -274,6 +274,7 @@ if not m or not m.group(1).startswith('re.search(') or 'spec_text' not in m.grou
 for name in ('INSERT INTO key_usage','UPDATE key_usage','SELECT NOT sealed'):
     lits=[l for l in vs.splitlines() if name in l and 'next(b for b in blocks' not in l and 're.search(' not in l and not l.strip().startswith('#') and 'old_key_usage' not in l and 'set_R' not in l and 'INSERT INTO key_usage(key_id, fingerprint, reserved)' not in l]
     for l in lits:
+        if 'SET ROLE' in l: continue   # permission probes, not specified statements
         if 'expect_error' in l or 'reserved = -1' in l or 'reserved = 1;' in l or 'reserved = {L + 1}' in l or 'SET sealed = true WHERE key_id = 2' in l: continue
         pr.append(f'hard-coded key_usage statement in verify-schema.py: {l.strip()[:80]}')
 check('C24 the schema verification tool takes the reservation, registration and sealing statements from database-schema.md',pr)
