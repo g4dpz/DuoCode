@@ -2,7 +2,7 @@
 
 Follows `requirements.md` (R#, decision IDs), `traceability.md` and the specification set listed in `requirements.md`. Test-first throughout. Test group IDs (`TS-xxx`) are defined in `test-strategy.md`.
 
-**No implementation is authorised.** Phases 2 onward start only after every Phase 1 gate (1.1 to 1.6) has been explicitly signed off by the owner and the sign-off recorded here. No application code, database migration or backend CI job may be added before task 1.9 is complete. (Specification-only workflow files added earlier at the owner's request, `.github/workflows/*` and `.github/copilot-instructions.md`, contain no application logic and their backend jobs stay inactive until Phase 2.)
+**No implementation is authorised.** Phases 2 onward start only when every Phase 1 gate (1.1 to 1.6) is signed off with no reopened part awaiting confirmation, and task 1.9 records the owner's written authorisation of Phase 2. No application code, database migration or backend CI job may be added before task 1.9 is complete. (Specification-only workflow files added earlier at the owner's request, `.github/workflows/*` and `.github/copilot-instructions.md`, contain no application logic and their backend jobs stay inactive until Phase 2.)
 
 ## Phase 1: Specification approval gates (no code)
 
@@ -26,7 +26,7 @@ Revision 3.1 review package: `revision-3.1-review-package.md` (change summary fr
   - **Signed off 2026-11-22 by David Johnson (G4DPZ), owner statement "Gate 6, yes to all".** Inputs given the same day: LI-1 "David Johnson & Mike Hartley" (two copyright lines in `NOTICE`), LI-2 "No" (no separate contributor licence agreement), LI-3 "outstanding", LI-4 "96 Summerfields Avenue, Halesowen, B62 9NR" (postal security contact in `CONTRIBUTING.md` section 4, published after the owner was told the repository is public; owner statement "continue"). Confirmed: the AGPL-3.0-only text in `LICENSE` (FSF text, SHA-256 `0d96a4ff...abcb0`), the SPDX header form in `NOTICE`, and that the owners' separate collaboration and IP agreement covers authority to grant commercial licences. **Outstanding legal item:** LI-3, legal review of the contribution terms and the dual-licensing position; with no separate agreement, commercial relicensing of outside contributions rests on `CONTRIBUTING.md` section 2 point 2. External contributions stay closed until the agreement-recording mechanism in section 1 exists. Any later change to `LICENSE`, `NOTICE` or `CONTRIBUTING.md` reopens Gate 6 for the changed part.
 - [ ] 1.7 Confirm the README matches the approved layout and statements. (R19.1, OD-1)
 - [ ] 1.8 Request an independent GitHub Copilot review of the specification set. Record findings and owner dispositions.
-- [ ] 1.9 **Phase 1 sign-off.** Possible only when 1.1 to 1.6 are all signed off. The owner records approval and authorises Phase 2 in writing here.
+- [ ] 1.9 **Phase 1 sign-off.** Possible only when 1.1 to 1.6 are all signed off and no reopened part awaits confirmation. The owner records approval and authorises Phase 2 in writing here. This is the only authorisation of Phase 2: signing off the gates alone does not authorise it.
 
 ## Phase 2: Repository scaffold and CI
 
