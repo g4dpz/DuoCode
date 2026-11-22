@@ -1,6 +1,6 @@
 # DuoCode Test Strategy (revision 3.1, final for gate review)
 
-Owns: test layers, required cases, test group IDs, CI jobs. Related: `requirements.md`, `traceability.md` (maps requirements to the group IDs below), `state-machine.md` (transition tables to cover), `database-schema.md`, `security-assessment.md` (threat IDs T1 to T32), `simulator-design.md`, `../../../openapi/openapi.yaml` (contract).
+Owns: test layers, required cases, test group IDs, CI jobs. Related: `requirements.md`, `traceability.md` (maps requirements to the group IDs below), `state-machine.md` (transition tables to cover), `database-schema.md`, `security-assessment.md` (threat IDs T1 to T39, mapped to test groups in section 18), `simulator-design.md`, `../../../openapi/openapi.yaml` (contract).
 
 Approach: test-first. Each task in `tasks.md` starts with failing tests. Tests run against a real PostgreSQL (CI service container). The database is never mocked in integration, concurrency or schema tests.
 
@@ -303,7 +303,7 @@ Each scenario runs many iterations with randomised ordering and barriers to forc
 | TS-CONC-20 | Many writing transactions on two or more instances, some rolled back or killed, reserve and consume encryptions against the real reservation statement | `invocations <= R <= 2^30` at every sample. No deadlock. The reservation holds the key row lock for one statement only and never while waiting for another lock |
 | TS-CONC-21 | 16 to 32 instances reserve concurrently against one key starting a few blocks below 2^30 | Exactly the available blocks are granted, `R` ends at exactly 2^30 and is never above it, every other attempt is refused |
 | TS-CONC-22 | An instance holds an outstanding allowance while another instance takes the last block and a third is refused | The holder may use only its units. No further reservation anywhere. `invocations <= R <= 2^30` |
-| TS-CONC-23 | Requests run on an instance that holds an allowance while the old key is sealed (planned rotation, including after 2^28) | Requests that began before the seal commits may finish and their units are counted. Requests that begin after it fail the pre-encryption check with `503`. No instance encrypts under the old key afterwards. `invocations <= R <= 2^30` |
+| TS-CONC-23 | Requests run on an instance that holds an allowance while the old key is sealed (planned rotation, including after 2^28) | A request that reached its commit-time check before the seal commits may commit. Any request still writing when the seal commits rolls back at its commit-time check (TS-CONC-28). Requests that begin after the seal and need a fresh encryption under the old key fail the pre-encryption check with `503` and write nothing. Requests that need no encryption are answered normally, including a rotation replay, which returns the stored replacement token, and a stored idempotent replay (TS-CONC-24). A request rolled back at its commit-time check returns `503` and stores nothing, so its retry is a fresh attempt, and for a rotation the old token stays valid. All units stay counted. No ciphertext under the old key is committed after the seal commits. `invocations <= R <= 2^30` |
 | TS-CONC-24 | Many requests on one instance race for the last claimable unit, and the last unit is consumed by a rotation whose retry arrives while no unit is left | Exactly one request claims the unit. Every other request defers and ends with `503` only if it needs a fresh encryption. The rotation retry is answered with the stored token. Nothing is written by a request that ends with `503` |
 | TS-CONC-25 | Rolling restart rotation with traffic: instances restart one by one while a new key is staged and then activated | No instance ever fails to decrypt data written by another. Activation is refused until every instance has the staged key |
 | TS-CONC-26 | Requests race on one instance while a reservation is in progress | After the reservation returns every claim is checked against the current allowance. No claim exceeds it. `invocations <= R <= 2^30` |
@@ -360,3 +360,49 @@ GitHub Actions jobs on every pull request:
 Scheduled or manual: large simulation and load run.
 
 Merge requires `check`, `test`, `openapi`, `docs`, `build` and `simulate` to pass.
+
+## 18. Threat coverage
+
+Every threat in `security-assessment.md` section 5 maps to the test groups that cover it. Where a mitigation is a process or build control rather than a test, the CI job is named.
+
+| Threat | Covered by |
+|---|---|
+| T1 | TS-SEC, TS-ENC (results gated on `COMPLETED`, zero ciphertext reads before it), TS-SIM (secrecy check) |
+| T2 | TS-CRED |
+| T3 | TS-CRED, TS-RATE (`ip:authfail`) |
+| T4 | TS-SEC (canary), TS-CONTRACT (credentials in headers and bodies only) |
+| T5 | TS-CRED, TS-CONC |
+| T6 | TS-CRED, TS-DB, TS-SIM (credential behaviour) |
+| T7 | TS-STATE, TS-DB |
+| T8 | TS-CONC, TS-IDEM, TS-DB |
+| T9 | TS-IDEM |
+| T10 | TS-CONC, TS-DB |
+| T11 | TS-CRED, TS-API (identical `404` and `401` bodies). Timing equality is not tested (residual in T11) |
+| T12 | TS-ENC (plaintext-at-rest scans), TS-IDEM (keyed fingerprints) |
+| T13 | TS-ENC, TS-OPS (restore drill) |
+| T14 | TS-ENC (tamper tests) |
+| T15 | TS-SEC (canary, redaction) |
+| T16 | TS-VAL. Parameterised queries are a code review rule, with no dedicated injection test |
+| T17 | TS-VAL |
+| T18 | TS-RATE, TS-CONC (lock timeouts), TS-LOAD |
+| T19 | TS-OPS |
+| T20 | TS-RET, TS-CONC |
+| T21 | TS-RET, TS-OPS |
+| T22 | CI `audit` job (dependency review, lockfile integrity) |
+| T23 | TS-CONTRACT (no recovery operation), TS-DOC (limitation stated) |
+| T24 | TS-CRED |
+| T25 | CI `check` job (banned `Math.random`) |
+| T26 | TS-CRED, TS-SIM (rotation replay) |
+| T27 | TS-ENC, TS-CONC |
+| T28 | TS-RATE |
+| T29 | TS-RATE, TS-RET (pruning), TS-SEC |
+| T30 | TS-OPS |
+| T31 | TS-ENC (restore and recovery cases), TS-OPS |
+| T32 | TS-RET, TS-CONC |
+| T33 | TS-ENC, TS-SEC |
+| T34 | TS-VAL (UUIDv4 only), TS-CRED |
+| T35 | TS-ENC (CR-11, CR-12, CR-14 cases) |
+| T36 | TS-ENC (CR-13, CR-15 cases), TS-CONC-23, TS-CONC-28 |
+| T37 | TS-ENC (CR-16 to CR-18 cases). Open concern: `tasks.md` 9.6a |
+| T38 | TS-ENC (role separation and no key material in output, CR-15, CR-16, CR-20) |
+| T39 | TS-ENC (gate reconciliation, CR-19), TS-OPS (restore drill) |

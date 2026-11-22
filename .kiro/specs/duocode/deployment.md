@@ -48,7 +48,7 @@ Ring changes need write access to the ring and to the key backup store. The appl
 | Network | Database and backup store only | Unchanged |
 | Started by | An operator, on demand (`docker compose run --rm keymgmt <command>`) | Compose |
 
-- Commands: `keys:generate`, `keys:activate`, `keys:seal`, `keys:abandon`. Every command takes the ring single-writer lock (`pg_advisory_lock` on a fixed key) for its whole run, writes the ring with the version check described in `security-assessment.md` section 3.6, backs up the new ring before releasing the lock, and only then exits.
+- Commands: `keys:generate`, `keys:activate` (online, or `--offline`), `keys:seal`, `keys:abandon`, `keys:retire` and `keys:reconcile-gate` (`database-schema.md` 6.2a). `keys:verify` is not a `keymgmt` command: it runs in the separate `keyverify` job (below). Every command takes the ring single-writer lock (`pg_advisory_lock` on a fixed key) for its whole run, writes the ring with the version check described in `security-assessment.md` section 3.6, backs up the new ring before releasing the lock, and only then exits.
 - `keys:activate` refuses to activate a staged key until every **live reader** acknowledges it. Live readers are the processes that hold a presence lock on their own database connection, so a stopped process is never counted and a live process that has not reported blocks activation. The operator also passes the expected number of live readers (`database-schema.md` section 6.2a). The job needs no access to the admin listener and no admin credential (CR-16, CR-17).
 - `keys:activate --offline` is the only way to activate a key when no reader is running: initial setup (no active key exists yet) and the restore procedure. It refuses while any presence lock is held (CR-17).
 - **Roster participants (CR-17).** The long-running services `app` and `cleanup`, and a `reencrypt` job while it runs, take a presence lock and report: they use the application role, which can write reports. `keyverify` takes a lock in a separate class and blocks activation while it runs, because it reads ciphertext but does not report. `keymgmt` reads the newest ring itself and is not part of the roster. Do not run `reencrypt` or `keyverify` during phases 1 and 2 of a rotation.
@@ -226,7 +226,7 @@ Situation C, suspected key compromise: follow `security-assessment.md` section 3
 
 ### 6.3 Key retirement
 
-Follow the checklist in `security-assessment.md` section 3.9: `keys:verify` shows no references, at least `BACKUP_RETENTION_DAYS` since re-encryption finished, the ring backup is updated, then remove the key from the active ring and, after the same retention, from ring backups.
+Follow the checklist in `security-assessment.md` section 3.9: `keys:verify` shows no references, at least `BACKUP_RETENTION_DAYS` since re-encryption finished, the ring backup is updated, then remove the key from the active ring with `keys:retire` in the `keymgmt` job (it also removes the key from `ring_state.required_key_ids`) and, after the same retention, from ring backups.
 
 ### 6.4 Planned key rotation, including one completed after 2^28 (RD-14, CR-10, CR-12)
 

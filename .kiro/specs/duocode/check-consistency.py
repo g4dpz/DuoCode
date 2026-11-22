@@ -315,6 +315,62 @@ for n,t in steps:
 if pm is not None and re.search(r'only for|skips this step',dict(steps)[str(pm)],re.I): pr.append('the Commit step is conditional')
 if [int(n) for n,_ in steps]!=list(range(1,len(steps)+1)): pr.append('steps not numbered 1..n')
 check('C26 state-machine 1.3 orders claim and pre-encryption check before BEGIN and the commit-time check before COMMIT',pr)
+# 27 the security assessment agrees with the approved schema and deployment, and every threat maps to tests (CR-24)
+pr=[]
+sa=files['security-assessment.md']; ts=files['test-strategy.md']; tk=files['tasks.md']
+s33=sa[sa.index('### 3.3a'):sa.index('### 3.4')]
+stmt=re.search(r'`UPDATE key_usage SET reserved[^`]*`',s33)
+if not stmt or 'fingerprint' not in stmt.group(0): pr.append('3.3a reservation statement lacks the fingerprint condition')
+if not re.search(r'AND fingerprint = \$4',files['database-schema.md']): pr.append('database-schema.md reservation statement lacks the fingerprint condition')
+rec=sa[sa.index('**Recovery (database restore).**'):sa.index('**Rotation (planned')]
+rsteps=dict((int(n),x) for n,x in re.findall(r'^(\d+)\. (.*)$',rec,re.M))
+def rstep(pat):
+    for n in sorted(rsteps):
+        if re.search(pat,rsteps[n],re.I): return n
+    return None
+rc=rstep(r'deno task cleanup'); rs=rstep(r'start `app` and `cleanup`')
+if rc is None or rs is None or not rc<rs: pr.append(f'restore summary: cleanup step {rc} must come before the service start step {rs}')
+if 'ABANDONED' not in rec: pr.append('restore summary does not abandon a sealed staged key')
+if rs is not None:
+    for n in sorted(rsteps):
+        if n<rs and re.search(r'\b(start|restart)\b[^.]*\b(services?|instances?|application)\b',rsteps[n],re.I):
+            pr.append(f'restore summary step {n} starts services before step {rs}')
+if 'rate_limits' not in rec: pr.append('restore summary does not truncate rate_limits')
+dep=files['deployment.md']; d61=dep[dep.index('### 6.1'):dep.index('### 6.2')]
+dc=re.search(r'^(\d+)\. Run `deno task cleanup`',d61,re.M); ds=re.search(r'^(\d+)\. Start `app` and `cleanup`',d61,re.M)
+if not (dc and ds and int(dc.group(1))<int(ds.group(1))): pr.append('deployment.md 6.1: cleanup must come before the service start')
+rot=sa[sa.index('**Rotation (planned'):sa.index('### 3.6a')]
+if '--expect' not in rot or 'required_key_ids' not in rot: pr.append('rotation summary lacks keys:activate --expect or the admission gate')
+s38=sa[sa.index('### 3.8'):sa.index('### 3.9')]
+for w in ('presence lock','pre-encryption check','commit-time check'):
+    if w not in s38: pr.append(f'3.8 re-encryption does not mention the {w}')
+threats=[int(x) for x in re.findall(r'^\| T(\d+) \|',sa[sa.index('## 5. Threats'):sa.index('## 6.')],re.M)]
+if threats!=list(range(1,len(threats)+1)): pr.append('threat IDs are not contiguous from T1')
+tmax=len(threats)
+t18=ts[ts.index('## 18. Threat coverage'):] if '## 18. Threat coverage' in ts else ''
+mapped=[int(x) for x in re.findall(r'^\| T(\d+) \|',t18,re.M)]
+if mapped!=threats: pr.append(f'test-strategy.md section 18 does not map exactly T1..T{tmax}: missing {sorted(set(threats)-set(mapped))}, extra {sorted(set(mapped)-set(threats))}')
+for fn,txt in (('test-strategy.md',ts),('tasks.md',tk)):
+    for m in re.finditer(r'\bT1 to T(\d+)\b',txt):
+        if int(m.group(1))!=tmax: pr.append(f'{fn} says T1 to T{m.group(1)}, threat table ends at T{tmax}')
+if '9.6a' not in sa[sa.index('## 8. Residual'):]: pr.append('the 9.6a concern is not listed as a residual risk')
+check('C27 security assessment matches the approved schema and deployment (reservation, restore order, rotation, re-encryption), and every threat maps to test groups',pr)
+# 28 the key commands are the same set everywhere (CR-24)
+pr=[]
+kcmd=r'keys:[a-z]+(?:-[a-z]+)*'
+dep=files['deployment.md']
+cl=re.search(r'^- Commands: (.*)$',dep[dep.index('### 2.1'):dep.index('## 3.')],re.M)
+canon=set(re.findall(kcmd,cl.group(1))) if cl else set()
+if not canon: pr.append('deployment.md 2.1 has no Commands list')
+used=set()
+for fn,txt in files.items():
+    if fn.endswith('.md'): used|=set(re.findall(kcmd,txt))
+for c in sorted(used-canon): pr.append(f'{c} is used but not in the deployment.md 2.1 command list')
+lay=files['design.md']; lay=lay[lay.index('## 3. Repository layout'):lay.index('## 4.')]
+for c in sorted(canon-set(re.findall(kcmd,lay))): pr.append(f'design.md section 3 layout does not list {c}')
+t92=re.search(r'^- \[[ x]\] 9\.2a .*$',files['tasks.md'],re.M)
+for c in sorted(canon-set(re.findall(kcmd,t92.group(0) if t92 else ''))): pr.append(f'tasks.md 9.2a does not list {c}')
+check(f'C28 every key command used in the specification is in the deployment.md 2.1 list, the design layout and task 9.2a ({len(canon)} commands)',pr)
 # 22 OpenAPI lint
 import shutil as _sh
 if _sh.which('npx'):

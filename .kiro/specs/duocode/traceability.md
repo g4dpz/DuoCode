@@ -14,7 +14,7 @@ The **Status** column records **decision provenance**: where the requirement cam
 | **A+RD** | As A, but part of the requirement still depends on an input from the owners (only the Gate 6 licensing inputs LI-1 to LI-4 remain) |
 | **B** | Taken from the baseline requirements without a separate owner decision. It was approved explicitly as part of Gate 1 |
 
-Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and state machine, 1.5 security assessment, 1.6 licensing and contributor arrangements. Current state: **Gates 1.1 to 1.4 signed off on 2026-11-22** (R19 licensing text pending 1.6). Gates 1.5 and 1.6 **not signed off**. A requirement is fully approved only when every gate listed in its row is signed off.
+Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and state machine, 1.5 security assessment, 1.6 licensing and contributor arrangements. Current state: **Gates 1.1 to 1.5 signed off on 2026-11-22** (R19 licensing text pending 1.6; 1.2 with the key command-list wording in `deployment.md` 2.1 and 6.3 and `design.md` section 3 re-confirmed the same day (see `tasks.md` 1.2)). Gate 1.6 **not signed off**. A requirement is fully approved only when every gate listed in its row is signed off.
 
 ## 2. Matrix
 
@@ -141,6 +141,7 @@ Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and 
 | CR-6 | R19.1 | `README.md` |
 | CR-7 | R19.5 | `revision-3.1-review-package.md` |
 | CR-8 | R9.4, R9.8 | `database-schema.md` `rematch_markers` |
+| CR-24 | R10.10, R10.13, R10.14 | `security-assessment.md` 3.3a, 3.6, 3.8, 3.9, 5 (T36 to T39), 8, `test-strategy.md` 18, `deployment.md` 2.1, 6.3, `design.md` 3, `tasks.md` 9.2a, `check-consistency.py` C27, C28 |
 | CR-23 | R10.10, R10.14 | `state-machine.md` 1.3, `check-consistency.py` C26 |
 | CR-22 | R10.7, R12.3, R20.7 | `openapi.yaml` draft 6, `check-consistency.py` C25 |
 | CR-21 | R10.13, R10.14 | `deployment.md` 6.1, `security-assessment.md` 3.6, `tasks.md` 9.6a, `test-strategy.md` TS-OPS |
@@ -167,6 +168,7 @@ Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and 
 | RD-9 | R20.4, R20.10 | `security-assessment.md` section 6.2 |
 | RD-10 | R10.10 | `security-assessment.md` section 3.3a |
 | RD-13 | R10.10, R10.13, R21.4 | `database-schema.md` section 6.2, `deployment.md` section 6.1 |
+| RD-15 | none (sign-off process) | `tasks.md` Phase 1, `.github/copilot-instructions.md` |
 | RD-14 | R10.10, R10.14 | `database-schema.md` sections 6.2, 6.3, `security-assessment.md` section 3.6a |
 | RD-11 | R8.13, R10.7, R13.2 | `security-assessment.md` sections 2.2, 3.5, `state-machine.md` section 3.1 |
 | RD-12 | R8.6 | `state-machine.md` section 3 |

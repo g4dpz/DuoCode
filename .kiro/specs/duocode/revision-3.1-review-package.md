@@ -2,17 +2,17 @@
 
 History: the revision 3.1 content was published on `spec/revision-3.1-review` and merged to `main` (PR #1, `b88580d`). The strict hard-stop correction (CR-9, section 3A) is on branch `spec/key-usage-strict-hard-stop`, created from that `main`. Commit hashes are reported with the branches, because a file cannot contain its own commit hash.
 
-The project stays in specification and approval mode. This package contains no application code, no database migration and no implementation task. **Gates 1 to 4 are signed off. Gates 5 and 6 are not.** The architecture (Deno, TypeScript, Oak, PostgreSQL, Docker Compose, Caddy) is unchanged.
+The project stays in specification and approval mode. This package contains no application code, no database migration and no implementation task. **Gates 1 to 5 are signed off. Gate 6 is not.** The architecture (Deno, TypeScript, Oak, PostgreSQL, Docker Compose, Caddy) is unchanged.
 
 ## 1. Gate status
 
 | Gate | Task | Subject | Status |
 |---|---|---|---|
 | 1 | 1.1 | Requirements | **Signed off 2026-11-22**, David Johnson (G4DPZ), as at `53c46df`. R19 licensing text pending Gate 6 |
-| 2 | 1.2 | Architecture | **Signed off 2026-11-22**, David Johnson (G4DPZ), as at `bcba9f6`, as written (online rotation kept). OI-1 and OI-2 open |
+| 2 | 1.2 | Architecture | **Signed off 2026-11-22**, David Johnson (G4DPZ), as at `bcba9f6`, as written (online rotation kept). OI-1 and OI-2 open. CR-24 command-list wording in `deployment.md` 2.1 and 6.3 and `design.md` section 3 **re-confirmed 2026-11-22** |
 | 3 | 1.3 | OpenAPI specification | **Signed off 2026-11-22**, David Johnson (G4DPZ), as `openapi.yaml` draft 6 (CR-22: `500`/`503` on every operation, `429` on admin) |
 | 4 | 1.4 | Database schema and state machine | **Signed off 2026-11-22**, David Johnson (G4DPZ), schema as at `e9c01eb`, state machine with CR-23 (write order includes the claim, pre-encryption check and commit-time check) |
-| 5 | 1.5 | Security assessment | Not signed off |
+| 5 | 1.5 | Security assessment | **Signed off 2026-11-22**, David Johnson (G4DPZ), `security-assessment.md` and `test-strategy.md` at `cbc43bf` plus the alignment fixes in CR-24 (threats T1 to T39) |
 | 6 | 1.6 | Licensing files and contributor arrangements | Not signed off. Inputs LI-1 to LI-4 outstanding |
 | Sign-off | 1.9 | Phase 1 complete, Phase 2 authorised | Not authorised |
 
@@ -375,7 +375,7 @@ Inputs only you can give. I have not invented any of them:
 ## 7. Outstanding issues
 
 1. No technical decision is pending. RD-14 is approved.
-2. Gates 1 (requirements), 2 (architecture), 3 (OpenAPI) and 4 (schema and state machine) are signed off as of 2026-11-22, with R19's licensing text pending Gate 6. Gates 5 and 6 await your explicit sign-off. Operational inputs OI-1 (Caddy build owner) and OI-2 (backup provider) are open.
+2. Gates 1 (requirements), 2 (architecture), 3 (OpenAPI), 4 (schema and state machine) and 5 (security assessment) are signed off as of 2026-11-22, with R19's licensing text pending Gate 6. Gate 6 awaits your explicit sign-off. Gate 2 was reopened for the CR-24 command-list wording in `deployment.md` 2.1 and 6.3 and `design.md` section 3, and re-confirmed on 2026-11-22. Operational inputs OI-1 (Caddy build owner) and OI-2 (backup provider) are open.
 3. LI-1 to LI-4 (section 6).
 4. The (APP) tests and the restore and rotation drills with real tools (section 5.4).
 5. Proposals approved at Gate 2 (no further approval needed): proxy access logs 14 days with no client IP, backups encrypted to both founders and stored off the VPS, and the 7-day target for high or critical proxy advisories. Operational inputs still needed: OI-1, the named owner of the Caddy build maintenance, and OI-2, the off-VPS backup provider. Implementation tasks, not approvals: re-verifying the Caddy pins at build time (task 9.3), and the privacy notice and UK GDPR wording.
