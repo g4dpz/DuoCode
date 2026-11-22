@@ -57,17 +57,22 @@ For a state-changing request the service applies checks in this order. The first
 1. Request validation (body, path, headers, nickname rules, idempotency key format). A malformed request is rejected here, before anything is read or written.
 2. Preliminary credential lookup by token hash. It is **not authoritative** and grants nothing. It finds the player (for the rate-limit subject) and rejects a token that does not exist at all with `INVALID_CREDENTIALS`. It also feeds `ip:authfail` when it fails.
 3. Rate-limit updates (IP and player buckets), each its own short autocommit transaction. A denial returns `429` and the request goes no further. No lock is held.
-4. Begin transaction. Lock the game row (`design.md` section 8).
-5. Authoritative credential validation (the authorisation point, `design.md` section 5.1): read the reference time, look up the credential, evaluate type, revocation, consumption and expiry in the order of `database-schema.md` section 4. A credential found valid in step 2 but revoked since fails here.
-6. For guesses and rotation: idempotency lookup, replay or `IDEMPOTENCY_CONFLICT` (R5.9).
-7. Game state (`GAME_NOT_ACTIVE`, `GAME_COMPLETED`, `GAME_FULL`, …).
-8. Player rules (`ALREADY_SOLVED`, `ATTEMPTS_EXHAUSTED`, `CODE_ALREADY_SET`, `REMATCH_ALREADY_CREATED`).
-9. **Encryption availability** (only for an operation that needs a fresh encryption): if the operation holds no claimed unit (the pre-encryption check failed, the key is sealed or at the hard stop, or a reservation was refused before `BEGIN`), end with `503 SERVICE_UNAVAILABLE` and `Retry-After`. Nothing has been written. Steps 6 to 8 are unaffected, so an idempotent replay, a conflict and every rule rejection still get their normal answer even when no unit is available (`design.md` section 9.1).
-10. Apply changes and commit.
+4. **Encryption claim, then the pre-encryption check** (only for an operation that may encrypt; CR-23, `design.md` 9.1). Claim the units the operation may need from the instance's allowance, reserving whole blocks first if the allowance is short. Then, as the last step before the transaction, run the pre-encryption check (`database-schema.md` 6.2: the key is not sealed and its registered fingerprint matches the loaded material). If the claim cannot be obtained or the check fails, return the claim and continue with an empty claim. The request is not rejected here, because it may need no encryption (step 10 decides).
+5. Begin transaction. Lock the game row (`design.md` section 8).
+6. Authoritative credential validation (the authorisation point, `design.md` section 5.1): read the reference time, look up the credential, evaluate type, revocation, consumption and expiry in the order of `database-schema.md` section 4. A credential found valid in step 2 but revoked since fails here.
+7. For guesses and rotation: idempotency lookup, replay or `IDEMPOTENCY_CONFLICT` (R5.9).
+8. Game state (`GAME_NOT_ACTIVE`, `GAME_COMPLETED`, `GAME_FULL`, …).
+9. Player rules (`ALREADY_SOLVED`, `ATTEMPTS_EXHAUSTED`, `CODE_ALREADY_SET`, `REMATCH_ALREADY_CREATED`).
+10. **Encryption availability** (only for an operation that needs a fresh encryption): if the operation holds no claimed unit (the pre-encryption check failed, the key is sealed or at the hard stop, or a reservation was refused, all in step 4), end with `503 SERVICE_UNAVAILABLE` and `Retry-After`. Nothing has been written. Steps 7 to 9 are unaffected, so an idempotent replay, a conflict and every rule rejection still get their normal answer even when no unit is available (`design.md` section 9.1).
+11. Apply changes, writing any ciphertext with the claimed units (each unit is consumed before the cipher is called).
+12. **Commit-time check** (only for a transaction that wrote ciphertext; CR-23, `database-schema.md` 6.2): immediately before `COMMIT`, run `SELECT sealed FROM key_usage WHERE key_id = $1 FOR SHARE`. If the key has been sealed, roll back and end with `503 SERVICE_UNAVAILABLE`. The consumed units stay counted. A transaction that wrote no ciphertext skips this step.
+13. **Commit.** Every successful write transaction commits here, whether or not it wrote ciphertext. After the request, return any claimed units it did not consume.
 
-For operations without a game id in the path (create rematch), step 2 finds the original game, step 4 locks it, and step 5 re-validates under the lock. Only the step 5 result counts.
+For operations without a game id in the path (create rematch), step 2 finds the original game, step 5 locks it, and step 6 re-validates under the lock. Only the step 6 result counts.
 
-Operations without a credential (create game, join) skip steps 2 and 5 and use the IP buckets only. Join authorises the invitation inside the transaction after the game lock, by the same rules.
+A retry of the transaction (`design.md` 8.2) is a fresh attempt: it leaves the transaction and repeats from step 4 with a new claim and a new pre-encryption check.
+
+Operations without a credential (create game, join) skip steps 2 and 6 and use the IP buckets only. Create game and join encrypt nothing, so they also skip steps 4, 10 and 12, and commit at step 13. Join authorises the invitation inside the transaction after the game lock, by the same rules.
 
 ### 1.4 Reads (CR-2)
 
