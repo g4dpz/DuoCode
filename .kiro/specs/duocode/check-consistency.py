@@ -536,10 +536,32 @@ pr=[]
 sm=files['state-machine.md']
 for need in ('Charging `pl:rotate` for rotation requests (RD-22','read-only replay check','before `BEGIN`','over-charge of one unit is accepted'):
     if need not in sm: pr.append('state-machine.md: missing '+need)
+# C40 scans sentences, not lines: wrapped text is joined, each sentence is judged with the one before it
+# (so "It is charged to pl:rotate. The charge is refunded." is caught), and only a negation inside the
+# offending sentence itself exempts it.
+c40_bad=re.compile(r'refund|credit(?:ed|s)? back|post-?commit|\b(?:after|once|when|as soon as)\b[^.;]{0,40}\bcommit(?:s|ted)?\b|after the (?:commit|rotation)|only checks that|issued after|charged once,? after|charge of a rotation that has',re.I)
+c40_ok=re.compile(r'no charge after|none after|\bno refund|\bnot refund|\bnever refund|\bwithout (?:a )?refund|replaces the round-2|round-2 (?:text|charge)|no `pl:rotate` statement runs after|is not charged|never charged',re.I)
+def c40_sentences(text):
+    out=[];buf=[]
+    def flush():
+        if buf:
+            joined=' '.join(buf);buf.clear()
+            out.extend(x for x in re.split(r'(?<=[.;:?!])\s+(?=[A-Z`(\d*])',joined) if x.strip())
+    for l in text.splitlines():
+        t=l.strip()
+        if not t: flush();continue
+        if t.startswith(('|','#','- ','* ')) or re.match(r'\d+\. ',t): flush()
+        if t.startswith('|'): out.extend(x for x in re.split(r'(?<=[.;?!])\s+(?=[A-Z`(\d*])',t) if x.strip());continue
+        buf.append(t)
+    flush();return out
+def c40_scan(fn,text):
+    res=[];prev=''
+    for sent in c40_sentences(text):
+        if c40_bad.search(sent) and ('pl:rotate' in sent or 'pl:rotate' in prev) and not c40_ok.search(sent): res.append(f'{fn}: post-commit or refund charging wording for pl:rotate: {sent[:90]}')
+        prev=sent
+    return res
 for fn in ('state-machine.md','deployment.md','design.md','requirements.md','security-assessment.md','test-strategy.md','revision-3.1-review-package.md','tasks.md'):
-    for i,l in enumerate(files[fn].splitlines(),1):
-        if re.search(r'refund|after its transaction commits|after the commit|after a committed rotation|only checks that|issued after the rotation committed|after it has committed|rotation that has committed|charged once, after|charge of a rotation that has',l,re.I) and 'pl:rotate' in l and not re.search(r'no charge after|none after|no refund|not refund|never refund|replaces the round-2|round-2 text|round-2 charge|rather than|no `pl:rotate` statement runs after',l,re.I) and not l.startswith('| 5 |'):
-            pr.append(f'{fn}:{i}: post-commit or refund charging wording for pl:rotate')
+    pr.extend(c40_scan(fn,files[fn]))
 if 'Twin rotations' not in files['test-strategy.md'] or 'TS-CONC-30' not in files['test-strategy.md']: pr.append('test-strategy.md: no twin rotation test or TS-CONC-30')
 if 'before its transaction' not in dep: pr.append('deployment.md: no pl:rotate charge-before-transaction rule')
 check('C40 pl:rotate is charged before the rotation transaction (RD-22), a known replay is found by a read-only check first, and no post-commit charge or refund wording remains',pr)
