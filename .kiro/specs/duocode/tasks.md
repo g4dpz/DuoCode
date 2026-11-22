@@ -6,7 +6,7 @@ Follows `requirements.md` (R#, decision IDs), `traceability.md` and the specific
 
 ## Phase 1: Specification approval gates (no code)
 
-Specification artefacts are drafted. These tasks are the owner's approvals. To sign off a gate, mark it `[x]` and append the date and approver. A gate is signed off only by an explicit owner statement.
+Specification artefacts are drafted. These tasks are the owner's approvals. To sign off a gate, mark it `[x]` and append the date and approver. A gate is signed off only by an explicit owner statement. One owner's statement is enough (RD-15).
 
 Revision 3.1 review package: `revision-3.1-review-package.md` (change summary from revision 3, verification results, remaining decisions). Gates 1 to 5 are signed off. Gate 6 and task 1.9 are not.
 

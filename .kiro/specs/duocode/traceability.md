@@ -168,6 +168,7 @@ Gates: 1.1 requirements, 1.2 architecture, 1.3 OpenAPI, 1.4 database schema and 
 | RD-9 | R20.4, R20.10 | `security-assessment.md` section 6.2 |
 | RD-10 | R10.10 | `security-assessment.md` section 3.3a |
 | RD-13 | R10.10, R10.13, R21.4 | `database-schema.md` section 6.2, `deployment.md` section 6.1 |
+| RD-15 | none (sign-off process) | `tasks.md` Phase 1, `.github/copilot-instructions.md` |
 | RD-14 | R10.10, R10.14 | `database-schema.md` sections 6.2, 6.3, `security-assessment.md` section 3.6a |
 | RD-11 | R8.13, R10.7, R13.2 | `security-assessment.md` sections 2.2, 3.5, `state-machine.md` section 3.1 |
 | RD-12 | R8.6 | `state-machine.md` section 3 |
