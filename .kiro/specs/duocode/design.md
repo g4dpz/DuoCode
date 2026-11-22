@@ -60,7 +60,8 @@ duocode/
 │   │   ├── persistence/            repositories, vault, rate limiter, migration runner
 │   │   ├── http/                   Oak apps (public and admin), routes, middleware, validation
 │   │   ├── config/                 typed configuration
-│   │   ├── tasks/                  cleanup, reencrypt, keys:generate, keys:verify, keys:seal
+│   │   ├── tasks/                  cleanup, reencrypt, keys:generate, keys:activate, keys:seal,
+│   │   │                           keys:abandon, keys:retire, keys:reconcile-gate, keys:verify
 │   │   └── main.ts
 │   └── tests/                      unit, engine, reference, integration, security, concurrency
 ├── tools/

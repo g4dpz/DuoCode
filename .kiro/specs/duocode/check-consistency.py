@@ -355,6 +355,22 @@ for fn,txt in (('test-strategy.md',ts),('tasks.md',tk)):
         if int(m.group(1))!=tmax: pr.append(f'{fn} says T1 to T{m.group(1)}, threat table ends at T{tmax}')
 if '9.6a' not in sa[sa.index('## 8. Residual'):]: pr.append('the 9.6a concern is not listed as a residual risk')
 check('C27 security assessment matches the approved schema and deployment (reservation, restore order, rotation, re-encryption), and every threat maps to test groups',pr)
+# 28 the key commands are the same set everywhere (CR-24)
+pr=[]
+kcmd=r'keys:[a-z]+(?:-[a-z]+)*'
+dep=files['deployment.md']
+cl=re.search(r'^- Commands: (.*)$',dep[dep.index('### 2.1'):dep.index('## 3.')],re.M)
+canon=set(re.findall(kcmd,cl.group(1))) if cl else set()
+if not canon: pr.append('deployment.md 2.1 has no Commands list')
+used=set()
+for fn,txt in files.items():
+    if fn.endswith('.md'): used|=set(re.findall(kcmd,txt))
+for c in sorted(used-canon): pr.append(f'{c} is used but not in the deployment.md 2.1 command list')
+lay=files['design.md']; lay=lay[lay.index('## 3. Repository layout'):lay.index('## 4.')]
+for c in sorted(canon-set(re.findall(kcmd,lay))): pr.append(f'design.md section 3 layout does not list {c}')
+t92=re.search(r'^- \[[ x]\] 9\.2a .*$',files['tasks.md'],re.M)
+for c in sorted(canon-set(re.findall(kcmd,t92.group(0) if t92 else ''))): pr.append(f'tasks.md 9.2a does not list {c}')
+check(f'C28 every key command used in the specification is in the deployment.md 2.1 list, the design layout and task 9.2a ({len(canon)} commands)',pr)
 # 22 OpenAPI lint
 import shutil as _sh
 if _sh.which('npx'):

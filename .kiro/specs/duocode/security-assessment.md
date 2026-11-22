@@ -282,7 +282,7 @@ A database writer cannot read codes or guesses. Such an attacker can still delet
 
 ### 3.9 Key retirement (R10.11)
 
-A key is removed from the ring only when all of these hold:
+A key is removed from the ring, with `keys:retire` in the `keymgmt` job, only when all of these hold:
 1. `keys:verify` shows no row in `secret_codes`, `guesses`, `idempotency_keys` or `token_rotations` references it.
 2. At least `BACKUP_RETENTION_DAYS` (35) have passed since re-encryption finished, so every backup that contains data under the key has expired and been deleted.
 3. No retained key backup is needed for restoring any database backup that still exists.
