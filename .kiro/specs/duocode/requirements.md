@@ -3,9 +3,9 @@
 Source: `DuoCode-Requirements` v2.0 (baseline, dated 21 November 2026) and the owner decisions in the decision register.
 Scope: MVP 1, a backend-only game playable through the REST API. The web application, PWA, white-label and multi-tenant work are out of scope.
 
-Status: **Gate 1 approved by the owner on 2026-11-22 (David Johnson, G4DPZ), as at `main` commit `53c46df`. R19's licensing text stays pending Gate 6.** No implementation is authorised. Implementation stays unauthorised until all six Phase 1 gates in `tasks.md` are explicitly signed off. A change to this file after approval reopens Gate 1 for the changed requirement.
+Status: **Gate 1 approved by the owner on 2026-11-22 (David Johnson, G4DPZ), as at `main` commit `53c46df`. R19's licensing text stays pending Gate 6. Gate 2 (architecture) approved on 2026-11-22.** No implementation is authorised. Implementation stays unauthorised until all six Phase 1 gates in `tasks.md` are explicitly signed off. A change to this file after approval reopens Gate 1 for the changed requirement.
 
-Revision history: revision 2 added the owner decisions OD-1 to OD-10. Revision 3 applied the owner review of revision 2. Revision 3.1 applies the owner review of revision 3: technical corrections CR-1 to CR-8, the RD-1 to RD-13 decisions, the CH-1 to CH-6 choices with the owner's qualifications, and the licensing artefacts. It does not change the architecture or widen MVP 1. The owner has approved all technical decisions below. Only the gate 6 inputs listed under "Inputs still needed" remain open. The change summary is in `revision-3.1-review-package.md`.
+Revision history: revision 2 added the owner decisions OD-1 to OD-10. Revision 3 applied the owner review of revision 2. Revision 3.1 applies the owner review of revision 3: technical corrections CR-1 to CR-8, the RD-1 to RD-13 decisions, the CH-1 to CH-6 choices with the owner's qualifications, and the licensing artefacts. It does not change the architecture or widen MVP 1. The owner has approved all technical decisions below. Only the owner inputs listed under "Operational inputs still needed" (OI-1, OI-2) and "Inputs still needed for gate 6" (LI-1 to LI-4) remain open. The change summary is in `revision-3.1-review-package.md`.
 
 ## Specification set
 
@@ -179,6 +179,13 @@ All ten are Approved and unchanged in substance.
 ### Decisions awaiting owner approval
 
 None of the technical decisions is pending. RD-14 was approved. Approval of the six Phase 1 gates, each to be authorised explicitly, remains with the owner (`tasks.md` Phase 1).
+
+### Operational inputs still needed (not technical decisions)
+
+| ID | Input needed from the owners | Where it shows |
+|---|---|---|
+| OI-1 | The founding collaborator who owns Caddy build maintenance | `deployment.md` 4.3 |
+| OI-2 | The off-VPS backup storage provider | `deployment.md` 5 |
 
 ### Inputs still needed for gate 6 (licensing)
 

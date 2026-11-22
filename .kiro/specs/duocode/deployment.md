@@ -84,7 +84,7 @@ Rules:
 - Request body limit 1 KiB on `/api/v1/*`.
 - Request and header timeouts to limit slow clients.
 - `/admin/*` is not routed. The proxy answers `404`.
-- Access log format: time, method, route path without query string, status, duration, request id. No headers, no query strings, no bodies, and no client IP by default. Retention 14 days, then deleted (proposal, needs approval). If the owners enable IP logging for abuse investigation, a retention period must be set and the privacy notice updated.
+- Access log format: time, method, route path without query string, status, duration, request id. No headers, no query strings, no bodies, and no client IP by default. Retention 14 days, then deleted (approved at Gate 2). If the owners enable IP logging for abuse investigation, a retention period must be set and the privacy notice updated.
 - Adds a request id header the application also logs, and the forwarded client IP header. The application trusts it only from `TRUSTED_PROXY_CIDRS` (RD-9).
 - Rate limiting module: stock Caddy has none. The proxy is built from a pinned, reproducible custom build that includes `github.com/mholt/caddy-ratelimit` (RD-1 approved). Build files, pins, provenance and maintenance are in section 4.3. The alternative, Nginx with `limit_req`, stays documented as the fallback.
 
@@ -162,9 +162,9 @@ Caddy is retained. Because stock Caddy has no rate-limit module, the project bui
 - The module's licence (Apache-2.0) and Caddy's (Apache-2.0) are recorded in `NOTICE` before release, with the third-party list.
 
 **Maintenance.**
-- Owner: one named founding collaborator. Reviews Caddy security advisories and the module repository at least monthly.
+- Owner: one named founding collaborator (**OI-1, name to be given by the owners**). Reviews Caddy security advisories and the module repository at least monthly.
 - Routine upgrade: one pull request that changes the pins, regenerates `go.mod` and `go.sum`, shows the dependency diff and the upstream change log for the module, re-runs the reproducibility job and the rate-limit tests, and adds a `BUILD-RECORD.md` entry. A module bump requires reading the upstream diff, because the project depends on a single maintainer and untagged commits.
-- Security upgrade: apply within 7 days for a high or critical advisory affecting the proxy (proposal).
+- Security upgrade: apply within 7 days for a high or critical advisory affecting the proxy (approved at Gate 2).
 - Exit criteria: if the module has an unfixed security issue, or has had no maintenance for 12 months while Caddy moves on incompatibly, switch to the documented Nginx `limit_req` fallback. The fallback configuration is kept in the operations docs and exercised in a TS-OPS test so it is ready.
 - The proxy only performs coarse per-IP limiting. All fine-grained limits are in the application (section 4.2), so replacing the module affects only layer 1.
 
@@ -172,7 +172,7 @@ Caddy is retained. Because stock Caddy has no rate-limit module, the project bui
 
 **Database backups**
 - Daily `pg_dump` (custom format) of the database, compressed and encrypted to the backup recipients (both founding collaborators, for example with `age`). The backup encryption key is separate from the code key ring.
-- Retention of backups: at most 35 days (`BACKUP_RETENTION_DAYS`). Older backups are deleted automatically. Backups are stored off the VPS in storage with its own credentials, not reachable from the `app` service.
+- Retention of backups: at most 35 days (`BACKUP_RETENTION_DAYS`). Older backups are deleted automatically. Backups are stored off the VPS in storage with its own credentials, not reachable from the `app` service (**OI-2: provider to be chosen by the owners**).
 - Deleted games remain in backups until they age out. The privacy notice states this. After a restore, cleanup runs before traffic (section 6).
 - Take a fresh backup before applying migrations in production.
 - Backups contain ciphertext under the code keys and plaintext feedback counts, nicknames and credential hashes. They are access-controlled accordingly.

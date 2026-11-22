@@ -2,14 +2,14 @@
 
 History: the revision 3.1 content was published on `spec/revision-3.1-review` and merged to `main` (PR #1, `b88580d`). The strict hard-stop correction (CR-9, section 3A) is on branch `spec/key-usage-strict-hard-stop`, created from that `main`. Commit hashes are reported with the branches, because a file cannot contain its own commit hash.
 
-The project stays in specification and approval mode. This package contains no application code, no database migration and no implementation task. **Gate 1 is signed off. Gates 2 to 6 are not.** The architecture (Deno, TypeScript, Oak, PostgreSQL, Docker Compose, Caddy) is unchanged.
+The project stays in specification and approval mode. This package contains no application code, no database migration and no implementation task. **Gates 1 and 2 are signed off. Gates 3 to 6 are not.** The architecture (Deno, TypeScript, Oak, PostgreSQL, Docker Compose, Caddy) is unchanged.
 
 ## 1. Gate status
 
 | Gate | Task | Subject | Status |
 |---|---|---|---|
 | 1 | 1.1 | Requirements | **Signed off 2026-11-22**, David Johnson (G4DPZ), as at `53c46df`. R19 licensing text pending Gate 6 |
-| 2 | 1.2 | Architecture | Not signed off |
+| 2 | 1.2 | Architecture | **Signed off 2026-11-22**, David Johnson (G4DPZ), as at `bcba9f6`, as written (online rotation kept). OI-1 and OI-2 open |
 | 3 | 1.3 | OpenAPI specification | Not signed off |
 | 4 | 1.4 | Database schema and state machine | Not signed off |
 | 5 | 1.5 | Security assessment | Not signed off |
@@ -375,8 +375,8 @@ Inputs only you can give. I have not invented any of them:
 ## 7. Outstanding issues
 
 1. No technical decision is pending. RD-14 is approved.
-2. Gate 1 (requirements) is signed off as of 2026-11-22, with R19's licensing text pending Gate 6. Gates 2 to 6 await your explicit sign-off.
+2. Gates 1 (requirements) and 2 (architecture) are signed off as of 2026-11-22, with R19's licensing text pending Gate 6. Gates 3 to 6 await your explicit sign-off. Operational inputs OI-1 (Caddy build owner) and OI-2 (backup provider) are open.
 3. LI-1 to LI-4 (section 6).
 4. The (APP) tests and the restore and rotation drills with real tools (section 5.4).
-5. Drafting proposals not explicitly approved: proxy access-log retention (14 days, no IP by default), backup recipients, a named owner for the Caddy build, the 7-day target for critical proxy security upgrades, re-verification of the Caddy version pins at build time. The privacy notice and UK GDPR wording remain tasks.
+5. Proposals approved at Gate 2 (no further approval needed): proxy access logs 14 days with no client IP, backups encrypted to both founders and stored off the VPS, and the 7-day target for high or critical proxy advisories. Operational inputs still needed: OI-1, the named owner of the Caddy build maintenance, and OI-2, the off-VPS backup provider. Implementation tasks, not approvals: re-verifying the Caddy pins at build time (task 9.3), and the privacy notice and UK GDPR wording.
 6. The Copilot review loop on PR #2 is closed by owner decision after round 11. One regression-check review of the CR-21 commit is requested. Task 9.6a carries the one unresolved concern.
