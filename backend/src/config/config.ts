@@ -48,7 +48,10 @@ export interface Config {
   readonly databaseUrl: Secret;
   readonly codeKeyringFile: string;
   readonly rateLimitHmacKeyFile: string;
-  /** Required in production; `undefined` only in development. */
+  /**
+   * Required in production. `undefined` only in development, where it means
+   * "trust no forwarded header". Never contains a default route (`/0`).
+   */
   readonly trustedProxyCidrs: readonly string[] | undefined;
   /** Required in production; `undefined` only in development. */
   readonly adminTokenSha256: Secret | undefined;
@@ -170,6 +173,13 @@ export type EnvSource = Readonly<Partial<Record<string, string | undefined>>>;
  * problem found.
  */
 export function parseConfig(env: EnvSource): Config {
+  const { config, problems } = collect(env);
+  if (problems.length > 0) throw new ConfigError(problems);
+  return config;
+}
+
+/** Validates `env`; the configuration is meaningful only when no problem was found. */
+function collect(env: EnvSource): { config: Config; problems: string[] } {
   const problems: string[] = [];
   const raw = (key: ConfigKey): string | undefined => {
     const v = env[key];
@@ -213,7 +223,7 @@ export function parseConfig(env: EnvSource): Config {
     const list = cidrsRaw.split(",").map((s) => s.trim());
     if (list.some((c) => !isCidr(c))) {
       problems.push(
-        "TRUSTED_PROXY_CIDRS: must be a comma-separated list of IPv4 or IPv6 CIDRs",
+        "TRUSTED_PROXY_CIDRS: must be a comma-separated list of IPv4 or IPv6 CIDRs, none of them /0",
       );
     } else trustedProxyCidrs = list;
   }
@@ -233,12 +243,16 @@ export function parseConfig(env: EnvSource): Config {
   if (adminRaw === undefined) {
     if (production) problems.push("ADMIN_LISTEN_ADDR: required in production");
   } else {
+    // Development checks the host:port form only; the network rules
+    // describe the production topology (RD-17, RD-27).
     const parsed = parseHostPort(adminRaw);
     if (parsed === undefined) {
       problems.push("ADMIN_LISTEN_ADDR: must be host:port");
-    } else if (parsed.port !== ADMIN_PORT) {
+    } else if (production && parsed.port !== ADMIN_PORT) {
       problems.push(`ADMIN_LISTEN_ADDR: port must be ${ADMIN_PORT}`);
-    } else if (isLoopback(parsed.host) || isUnspecified(parsed.host)) {
+    } else if (
+      production && (isLoopback(parsed.host) || isUnspecified(parsed.host))
+    ) {
       problems.push(
         "ADMIN_LISTEN_ADDR: must be the internal network address, never loopback or all interfaces (RD-17)",
       );
@@ -298,9 +312,7 @@ export function parseConfig(env: EnvSource): Config {
     logLevel = levelRaw as LogLevel;
   } else problems.push(`LOG_LEVEL: must be one of ${LOG_LEVELS.join(", ")}`);
 
-  if (problems.length > 0) throw new ConfigError(problems);
-
-  return deepFreeze({
+  const config = deepFreeze({
     mode,
     databaseUrl,
     codeKeyringFile,
@@ -328,6 +340,7 @@ export function parseConfig(env: EnvSource): Config {
     logLevel,
     httpMaxBodyBytes,
   });
+  return { config, problems };
 }
 
 /** Checks that a path names a readable regular file. */
@@ -360,8 +373,8 @@ export async function loadConfig(
   const fileCheck = options.fileCheck ?? readableFile;
   const env: Record<string, string | undefined> = {};
   for (const key of CONFIG_KEYS) env[key] = get(key);
-  const config = parseConfig(env);
-  const problems: string[] = [];
+  // One pass: parse problems and file problems are reported together.
+  const { config, problems } = collect(env);
   if (!(await fileCheck(config.codeKeyringFile))) {
     problems.push("CODE_KEYRING_FILE: file does not exist or is not readable");
   }
@@ -392,7 +405,7 @@ function parseRateLimits(
     return merged;
   }
   for (const [scope, limit] of Object.entries(parsed)) {
-    if (!(scope in RATE_LIMIT_DEFAULTS)) {
+    if (!Object.hasOwn(RATE_LIMIT_DEFAULTS, scope)) {
       problems.push(
         "RATE_LIMITS: unknown scope (allowed: " +
           Object.keys(RATE_LIMIT_DEFAULTS).join(", ") + ")",
@@ -461,6 +474,7 @@ function isCidr(value: string): boolean {
   const m = /^([^/]+)\/(\d{1,3})$/.exec(value);
   if (m === null) return false;
   const bits = Number(m[2]);
+  if (bits === 0) return false; // a default route would trust every address
   if (isIPv4(m[1])) return bits <= 32;
   if (isIPv6(m[1])) return bits <= 128;
   return false;

@@ -185,6 +185,9 @@ Deno.test("RATE_LIMITS rejects bad JSON, unknown scopes and non-positive values"
       '{"pl:guess":{"capacity":"10","refillPerMinute":1}}',
       '{"pl:guess":{"capacity":1,"refillPerMinute":1,"burst":2}}',
       '{"pl:guess":5}',
+      '{"constructor":{"capacity":1,"refillPerMinute":1}}',
+      '{"toString":{"capacity":1,"refillPerMinute":1}}',
+      '{"hasOwnProperty":{"capacity":1,"refillPerMinute":1}}',
     ]
   ) hasProblem({ ...PROD, RATE_LIMITS: bad }, "RATE_LIMITS");
 });
@@ -199,6 +202,9 @@ Deno.test("TRUSTED_PROXY_CIDRS accepts IPv4 and IPv6 CIDRs only", () => {
       "example.com/8",
       "10.0.0.0/8,",
       "010.0.0.0/8",
+      "0.0.0.0/0",
+      "::/0",
+      "10.0.0.0/8,0.0.0.0/0",
     ]
   ) {
     hasProblem({ ...PROD, TRUSTED_PROXY_CIDRS: bad }, "TRUSTED_PROXY_CIDRS");
@@ -245,6 +251,12 @@ Deno.test("ADMIN_LISTEN_ADDR: internal address on port 8081, never loopback or a
     parseConfig({ ...PROD, ADMIN_LISTEN_ADDR: "app:8081" }).adminListen,
     { host: "app", port: 8081 },
   );
+  // Development checks the host:port form only (RD-27).
+  assertEquals(
+    parseConfig({ ...DEV, ADMIN_LISTEN_ADDR: "127.0.0.1:9000" }).adminListen,
+    { host: "127.0.0.1", port: 9000 },
+  );
+  hasProblem({ ...DEV, ADMIN_LISTEN_ADDR: "no-port" }, "ADMIN_LISTEN_ADDR");
   assertEquals(
     parseConfig({ ...PROD, ADMIN_LISTEN_ADDR: "[fd00::5]:8081" }).adminListen
       ?.port,
@@ -334,6 +346,22 @@ Deno.test("loadConfig reads only the configuration keys and requires both secret
     ConfigError,
   );
   assert(e.problems.some((x) => x.startsWith("RATE_LIMIT_HMAC_KEY_FILE")));
+  // Parse problems and file problems come back together in one error.
+  const both = await assertRejects(
+    () =>
+      loadConfig({
+        env: (k) => (k === "TTL_UNJOINED_DAYS" ? "0" : env(k)),
+        fileCheck: () => Promise.resolve(false),
+      }),
+    ConfigError,
+  );
+  for (
+    const key of [
+      "TTL_UNJOINED_DAYS",
+      "CODE_KEYRING_FILE",
+      "RATE_LIMIT_HMAC_KEY_FILE",
+    ]
+  ) assert(both.problems.some((x) => x.startsWith(key)), key);
 });
 
 Deno.test("the default file check accepts a readable file and refuses a missing one", async () => {

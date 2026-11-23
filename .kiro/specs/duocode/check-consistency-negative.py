@@ -64,6 +64,20 @@ def gitignore_drops_secrets(r): edit(r,'.gitignore','\nsecrets/\n','\n')
 def gitignore_hides_placeholder(r):
     p=os.path.join(r,'.gitignore'); open(p,'a').write('.env.example\n'); git(r,'add','.gitignore')
 def notice_changed(r): edit(r,'NOTICE','DuoCode','DuoCode ')
+DJ='backend/deno.json'
+def env_unknown_key(r): edit(r,DJ,'--allow-env=DUOCODE_ENV,','--allow-env=AWS_SECRET,DUOCODE_ENV,')
+def env_key_missing(r):   # the migrate task (deno run) stops granting DATABASE_URL
+    import json
+    p=os.path.join(r,DJ); d=json.load(open(p))
+    d['tasks']['migrate']=d['tasks']['migrate'].replace(',DATABASE_URL,',',',1)
+    open(p,'w').write(json.dumps(d,indent=2)+'\n'); git(r,'add',DJ)
+def default_changed(r): edit(r,'backend/src/config/config.ts','TTL_UNJOINED_DAYS: "7",','TTL_UNJOINED_DAYS: "8",')
+def delivered_deleted(r): git(r,'rm','-q','-f',DJ)
+def leftover_gitkeep(r): add(r,'backend/src/engine/rules.ts',HDR+'export const x = 1;\n')
+def range_end_bad(r): edit(r,'.kiro/specs/duocode/design.md','## 13. Configuration','## 13. Configuration\n\nSee `deployment.md` 6.1 to 6.99.')
+def uppercase_ref_bad(r): edit(r,'.kiro/specs/duocode/design.md','## 13. Configuration','## 13. Configuration\n\nSee `README.md` 99.')
+def keyring_under_kiro(r): add(r,'.kiro/specs/duocode/keyring.json','{}\n',force=True)
+def gitignore_hides_source(r): edit(r,'.gitignore','!*.ts\n','')
 def trace_names_missing(r): edit(r,'.kiro/specs/duocode/traceability.md','`design.md`','`design-old.md`')
 def bad_cross_ref(r): edit(r,'.kiro/specs/duocode/design.md','## 13. Configuration','## 13. Configuration\n\nSee `deployment.md` 99.9 for details.')
 
@@ -83,6 +97,15 @@ CASES=[
     ('.gitignore ignores the .env.example placeholder', gitignore_hides_placeholder, 'C44', '.env.example is ignored'),
     ('NOTICE differs from its Gate 6 version', notice_changed, 'C13', 'NOTICE differs'),
     ('traceability.md names a file that does not exist', trace_names_missing, 'C47', 'design-old.md'),
+    ('a deno.json task grants an unknown environment key', env_unknown_key, 'C45', 'AWS_SECRET is not a configuration key'),
+    ('a deno run task does not grant a key loadConfig reads', env_key_missing, 'C45', 'does not grant DATABASE_URL'),
+    ('a configuration default differs from design.md section 13', default_changed, 'C46', 'TTL_UNJOINED_DAYS'),
+    ('a file delivered by a completed task is deleted', delivered_deleted, 'C49', 'backend/deno.json (delivered by task 2.3) is missing'),
+    ('a .gitkeep remains beside a real file', leftover_gitkeep, 'C42', 'backend/src/engine/.gitkeep remains'),
+    ('the end of a reference range does not exist', range_end_bad, 'C48', '`deployment.md` 6.99'),
+    ('an uppercase file reference does not resolve', uppercase_ref_bad, 'C48', '`README.md` 99'),
+    ('a key ring data file is tracked under .kiro/', keyring_under_kiro, 'C21', 'key ring, secret or environment file name'),
+    ('.gitignore hides source files named after the key ring', gitignore_hides_source, 'C44', 'backend/src/persistence/keyring.ts is ignored'),
     ('a cross-reference names a section that does not exist', bad_cross_ref, 'C48', '`deployment.md` 99.9'),
 ]
 
