@@ -691,9 +691,32 @@ if os.path.exists(cf):
     if not dep_rl: pr.append('no rate-limit rows found in deployment.md 4.2')
     if code_rl!=dep_rl: pr.append(f'RATE_LIMIT_DEFAULTS differ from deployment.md 4.2: {sorted(set(code_rl.items())^set(dep_rl.items()))}')
 check('C46 backend/src/config/config.ts lists exactly the design.md section 13 keys with the same defaults, and its rate-limit defaults equal deployment.md 4.2',pr)
+# 47 TS-DOC: every artefact traceability.md names exists (task 2.7, R19.5, test-strategy.md section 16)
+pr=[]
+trc=files['traceability.md']
+for tok in sorted(set(re.findall(r'`([^`\s]+)`',trc))):
+    if not (re.search(r'\.(?:md|ya?ml|py|ts|json|sql)$',tok) or tok.endswith('/')): continue
+    _spec=root+'.kiro/specs/duocode/'   # not d, which earlier checks rebind
+    cands=[root+tok, _spec+tok, root+'openapi/'+tok, root+'.github/workflows/'+tok, os.path.normpath(_spec+tok)]
+    if not any(os.path.exists(c.rstrip('/')) for c in cands): pr.append(f'traceability.md names {tok}, which does not exist')
+check('C47 every file traceability.md names exists',pr)
+# 48 TS-DOC: every "`<file>.md` N" cross-reference resolves to a heading, or for tasks.md to a task or phase (task 2.7)
+pr=[]
+def _heads(t): return set(re.findall(r'^#{2,4} (\d+(?:\.\d+)*[a-z]?)[\. ]',t,re.M))
+_H={k:_heads(v) for k,v in files.items() if k.endswith('.md')}
+_tids=set(re.findall(r'^- \[[ x]\] (\d+\.\d+[a-z]?) ',files['tasks.md'],re.M))|set(re.findall(r'^## Phase (\d+)',files['tasks.md'],re.M))
+_nref=0
+for fn,t in files.items():
+    if not fn.endswith('.md'): continue
+    for m in re.finditer(r'`([a-z0-9-]+\.md)`,? (?:sections? )?(\d+(?:\.\d+)*[a-z]?)\b(?!\s*(?:to|days|%|ms|s\b))',t):
+        tgt,sec=m.group(1),m.group(2)
+        if tgt not in _H: continue
+        _nref+=1
+        if not (sec in _tids if tgt=='tasks.md' else sec in _H[tgt]): pr.append(f'{fn}: `{tgt}` {sec} does not resolve')
+check(f'C48 every "`<file>.md` N" reference resolves to a heading, or in tasks.md to a task or phase ({_nref} references)',pr)
 # 22 OpenAPI lint
 import shutil as _sh
-if _sh.which('npx'):
+if _sh.which('npx') and not os.environ.get('CHECK_SKIP_REDOCLY'):
     try:
         r=subprocess.run(['npx','--yes','@redocly/cli@1','lint',root+'openapi/openapi.yaml'],capture_output=True,text=True,timeout=120)
         out=r.stdout+r.stderr
@@ -702,7 +725,7 @@ if _sh.which('npx'):
     except Exception as e:
         results.append(('C22 OpenAPI lint (Redocly): SKIPPED ('+str(e)[:60]+')',None,[]))
 else:
-    results.append(('C22 OpenAPI lint (Redocly): SKIPPED (npx not available)',None,[]))
+    results.append(('C22 OpenAPI lint (Redocly): SKIPPED (npx not available or CHECK_SKIP_REDOCLY set)',None,[]))
 w=0; sk=0
 for name,ok,det in results:
     if ok is None:
