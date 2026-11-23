@@ -81,6 +81,8 @@ jobs:
       - run: pip install pyyaml==6.0.3
       - name: Specification consistency checks (TS-DOC)
         run: python3 .kiro/specs/duocode/check-consistency.py
+      - name: Negative cases for the governance checks
+        run: python3 .kiro/specs/duocode/check-consistency-negative.py
   check:
     name: Format, lint, type check
     runs-on: ubuntu-latest
