@@ -25,4 +25,5 @@ jobs:
           node-version: 22
       - name: Cache Deno dependencies
         if: ${{ hashFiles('backend/deno.lock') != '' }}
-        run: deno install --entrypoint backend/src/main.ts
+        working-directory: backend
+        run: deno install --frozen

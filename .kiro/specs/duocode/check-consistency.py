@@ -653,6 +653,20 @@ else:
     for path in ('.env.example','secrets.example/duocode_code_keyring','secrets.example/dev.pem','.kiro/specs/duocode/keyring-format.md','backend/src/main.ts','NOTICE'):
         if _ignored(path): pr.append(f'{path} is ignored but must be committable')
 check('C44 .gitignore ignores environment, secret, key and build files and keeps .env.example, secrets.example/ and the specification committable',pr)
+# 45 every --allow-env key in backend/deno.json is a configuration key in design.md section 13 (task 2.3)
+pr=[]
+import json as _json
+dj=root+'backend/deno.json'
+if os.path.exists(dj):
+    sec13=files['design.md'][files['design.md'].index('## 13. Configuration'):files['design.md'].index('## 14.')]
+    cfg=set(re.findall(r'^\| `([A-Z][A-Z0-9_]*)`',sec13,re.M))
+    tasks=_json.load(open(dj)).get('tasks',{})
+    for name,cmd in sorted(tasks.items()):
+        for lst in re.findall(r'--allow-env=(\S+)',cmd):
+            for k in lst.split(','):
+                if k not in cfg: pr.append(f'deno.json task {name}: {k} is not a configuration key in design.md section 13')
+        if re.search(r'--allow-env(?!=)',cmd): pr.append(f'deno.json task {name}: --allow-env without a key list')
+check('C45 every --allow-env key in backend/deno.json is a configuration key in design.md section 13, and no task has an unrestricted --allow-env',pr)
 # 22 OpenAPI lint
 import shutil as _sh
 if _sh.which('npx'):

@@ -22,6 +22,7 @@ jobs:
     outputs:
       backend_src: ${{ steps.d.outputs.backend_src }}
       backend_tests: ${{ steps.d.outputs.backend_tests }}
+      deno_lock: ${{ steps.d.outputs.deno_lock }}
       simulator: ${{ steps.d.outputs.simulator }}
       dockerfile: ${{ steps.d.outputs.dockerfile }}
     steps:
@@ -31,8 +32,10 @@ jobs:
           has() { [ -n "$(git ls-files -- "$@")" ]; }
           # check: backend/deno.json and at least one TypeScript file under backend/src
           echo "backend_src=$([ -f backend/deno.json ] && has 'backend/src/*.ts' && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          # test: also the migration entry point and at least one test file
-          echo "backend_tests=$([ -f backend/deno.json ] && [ -f backend/src/tasks/migrate.ts ] && has 'backend/tests/*.ts' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          # test: at least one module that deno test collects (*_test.ts, *.test.ts, test.ts)
+          echo "backend_tests=$([ -f backend/deno.json ] && has 'backend/tests/*_test.ts' 'backend/tests/*.test.ts' 'backend/tests/test.ts' 'backend/tests/*/test.ts' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          # lockfile: integrity is checked as soon as backend/deno.lock exists
+          echo "deno_lock=$([ -f backend/deno.lock ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           # simulate: the simulator entry point and the CI Compose file it starts
           echo "simulator=$([ -f tools/simulator/deno.json ] && [ -f tools/simulator/main.ts ] && [ -f deployment/docker-compose.ci.yml ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "dockerfile=$([ -f backend/Dockerfile ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
@@ -77,9 +80,9 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-      - run: deno fmt --check
-      - run: deno lint
-      - run: deno check src/main.ts
+      - run: deno task fmt --check
+      - run: deno task lint
+      - run: deno task check
       - name: Engine import boundary
         run: |
           if grep -rEn "from ['\"](npm:|jsr:|https?:|node:|@oak)|crypto\.subtle|Deno\." src/engine; then
@@ -125,7 +128,9 @@ jobs:
           k() { head -c 32 /dev/urandom | base64; }
           printf '{"active":1,"keys":{"1":"%s"}}' "$(k)" > "$RUNNER_TEMP/secrets/keyring.json"
           echo "CODE_KEYRING_FILE=$RUNNER_TEMP/secrets/keyring.json" >> "$GITHUB_ENV"
-      - run: deno task migrate
+      - name: Apply migrations
+        if: ${{ hashFiles('backend/src/tasks/migrate.ts') != '' }}
+        run: deno task migrate
       - run: deno task test --coverage=coverage
 
   simulate:
@@ -146,6 +151,21 @@ jobs:
             --strategy mixed --retry-rate 0.1 --rotate-rate 0.02 --lost-rotation-rate 0.5 \
             --test-deployment --base-url http://localhost:8080/api/v1
 
+  lockfile:
+    name: Lockfile integrity
+    runs-on: ubuntu-latest
+    needs: [detect]
+    if: ${{ needs.detect.outputs.deno_lock == 'true' }}
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: deno.lock matches deno.json and the registries
+        run: deno install --frozen
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest
