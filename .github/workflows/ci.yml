@@ -97,14 +97,17 @@ jobs:
       - run: deno task fmt --check
       - run: deno task lint
       - run: deno task check
-      - name: Engine import boundary
+      - name: Architecture rules (engine boundary, Math.random, credential access)
+        run: deno task lint:rules
+      - name: Migrations are immutable
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          if grep -rEn "from ['\"](npm:|jsr:|https?:|node:|@oak)|crypto\.subtle|Deno\." src/engine; then
-            echo "src/engine must stay pure"; exit 1
-          fi
-      - name: Math.random is banned in backend
-        run: |
-          if grep -rn "Math.random" src; then exit 1; fi
+          # A merged migration is never edited, renamed or deleted; new files only (test-strategy.md TS-DB).
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          changed=$(git diff --name-status --no-renames FETCH_HEAD HEAD -- migrations/ | grep -v '\.gitkeep$' | grep -v '^A' || true)
+          if [ -n "$changed" ]; then echo "Merged migrations changed:"; echo "$changed"; exit 1; fi
 
   test:
     name: Tests
