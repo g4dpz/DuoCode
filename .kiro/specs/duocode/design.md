@@ -335,6 +335,7 @@ All keys are read at start-up, validated, and failure is fatal. Defaults are the
 
 | Key | Default | Purpose |
 |---|---|---|
+| `DUOCODE_ENV` | `production` | Deployment mode, `production` or `development`. Production applies the "required in production" rules below, so a missing setting fails safe (RD-25) |
 | `DATABASE_URL` | none (required) | PostgreSQL connection |
 | `CODE_KEYRING_FILE` | `/run/secrets/duocode_code_keyring` | Path to key ring file (ND-9) |
 | `RATE_LIMIT_HMAC_KEY_FILE` | `/run/secrets/duocode_ratelimit_key` | Secret for IP subject HMAC (RD-9). Not backed up (CH-2) |
@@ -355,10 +356,10 @@ All keys are read at start-up, validated, and failure is fatal. Defaults are the
 | `KEYMGMT_LOCK_WAIT_SECONDS` | `300` | Longest time `keymgmt` waits for the ring lock before aborting (CR-18) |
 | `KEYVERIFY_MAX_SECONDS` | `1800` | Hard deadline for a `keyverify` run, enforced by statement timeouts and a process timer (CR-18) |
 | `KEY_USAGE_REFRESH_SECONDS` | `30` | How often an instance re-reads the authoritative `key_usage` rows for metrics and health (CR-11) |
-| `RATE_LIMITS` | see `deployment.md` section 4 | Capacity and refill per scope |
+| `RATE_LIMITS` | see `deployment.md` section 4 | Capacity and refill per scope. JSON object keyed by scope, for example `{"pl:guess":{"capacity":10,"refillPerMinute":30}}`; it overrides only the scopes it names, and the others keep the `deployment.md` 4.2 values. Capacity is a positive integer and refill a positive number (fractions allowed). Unknown scopes stop start-up (RD-25) |
 | `DB_LOCK_TIMEOUT_MS` | `5000` | Transaction lock timeout |
 | `DB_STATEMENT_TIMEOUT_MS` | `10000` | Statement timeout |
-| `LOG_LEVEL` | `info` | Logging |
+| `LOG_LEVEL` | `info` | Logging: `debug`, `info`, `warn` or `error` (RD-25) |
 | `HTTP_MAX_BODY_BYTES` | `1024` | Body size limit |
 
 Validation: TTLs, replay window, batch size and rate-limit values must be positive. `KEY_USAGE_WARN <= KEY_USAGE_ROTATE_BY <= KEY_USAGE_HARD_STOP <= 2^30`, and `KEY_USAGE_BLOCK` must be at least 1, and `KEY_USAGE_HARD_STOP` must be a multiple of it. Any violation stops start-up. `BACKUP_RETENTION_DAYS` must be positive. Development and production use separate environment files. Only `.env.example` is committed.
