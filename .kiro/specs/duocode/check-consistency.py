@@ -254,10 +254,10 @@ check('C20 no decision recorded as approved in the register is still described a
 # 21 no application code, migrations or implementation tasks before Phase 1 sign-off (task 1.9)
 import subprocess
 phase1_signed=bool(re.search(r'^- \[x\] 1\.9 ',files['tasks.md'],re.M))
-lsf=subprocess.run(['git','-C',root,'ls-files','-co','--exclude-standard'],capture_output=True,text=True)
+lsf=subprocess.run(['git','-C',root,'ls-files','--cached'],capture_output=True,text=True)   # tracked files only; untracked build output cannot fail the suite
 tracked=lsf.stdout.split()
 allowed_ext={'.md','.yaml','.yml','.py'}
-if phase1_signed: allowed_ext|={'.ts','.json','.lock','.go','.mod','.sum','.sql'}   # Phase 2 onward: Deno, Postman, Caddy build, migrations
+ext_where={'.ts':('backend/','tools/'),'.json':('backend/','tools/','postman/'),'.lock':('backend/','tools/'),'.go':('deployment/caddy/',),'.mod':('deployment/caddy/',),'.sum':('deployment/caddy/',)} if phase1_signed else {}   # Phase 2 onward, by location
 allowed_base={'LICENSE','NOTICE','.gitignore','DuoCode-Requirements','.gitkeep','Dockerfile','.env.example'}
 pr=[f'git ls-files failed (exit {lsf.returncode}): {lsf.stderr.strip()[:100]}'] if lsf.returncode!=0 else []
 for f in tracked:
@@ -268,7 +268,12 @@ for f in tracked:
     if ext=='.sql' or (not phase1_signed and 'migration' in f.lower()):
         if not (phase1_signed and f.startswith('backend/migrations/')): pr.append(f'{f}: migration or SQL file outside backend/migrations/' if phase1_signed else f'{f}: migration or SQL file')
         continue
+    if re.search(r'(?i)keyring|key[-_]ring|secret|^\.env',base) and base!='.env.example' and 'secrets.example/' not in f and not f.startswith('.kiro/'):
+        pr.append(f'{f}: key ring, secret or environment file name'); continue
     if base in allowed_base: continue
+    if ext in ext_where:
+        if not f.startswith(ext_where[ext]): pr.append(f'{f}: {ext} files belong under {", ".join(ext_where[ext])}')
+        continue
     if ext=='.py':
         if not f.startswith('.kiro/specs/duocode/'): pr.append(f'{f}: unexpected file type')   # only the specification tool scripts are Python
         continue
@@ -452,7 +457,11 @@ def tree_paths(txt,inline):
             continue
         depth=len(m.group(1))//4; stack=stack[:depth]; tok=m.group(2); full=''.join(stack)+tok
         add(full)
-        if tok.endswith('/'): stack.append(tok)
+        if tok.endswith('/'):
+            stack.append(tok)
+            if inline:   # child directories named on a directory line, e.g. postman/ ... environments/
+                for x in m.group(3).replace(',',' ').split():
+                    if re.fullmatch(r'[\w.-]+/',x): add(full+x)
         elif inline:   # a file entry may carry sibling files and root-relative paths on the same line
             parent=full[:full.rfind('/')+1] if '/' in full else ''
             for x in m.group(3).split():
@@ -602,10 +611,12 @@ check('C41 RD-22 to RD-24 are recorded with the owner statement, mapped, and car
 # 42 the design.md section 3 directories exist once task 2.1 is done (R19.1)
 pr=[]
 if re.search(r'^- \[x\] 2\.1 ',files['tasks.md'],re.M):
-    for d in sorted(p for p in tree_paths(lay,True) if p.endswith('/') and p!='frontend/'):
-        if not os.path.isdir(root+d): pr.append(f'{d} from design.md section 3 does not exist')
+    lay42=files['design.md']; lay42=lay42[lay42.index('## 3. Repository layout'):lay42.index('## 4.')]
+    cached=subprocess.run(['git','-C',root,'ls-files','--cached'],capture_output=True,text=True).stdout.split()
+    for d in sorted(p for p in tree_paths(lay42,True) if p.endswith('/') and p!='frontend/'):
+        if not os.path.isdir(root+d) or not any(f.startswith(d) for f in cached): pr.append(f'{d} from design.md section 3 does not exist with a tracked file in it')
     if os.path.exists(root+'frontend'): pr.append('frontend/ exists, but design.md section 3 creates it only when browser work starts')
-check('C42 once task 2.1 is done, every directory in the design.md section 3 layout exists and frontend/ does not',pr)
+check('C42 once task 2.1 is done, every directory in the design.md section 3 layout exists with a tracked file, and frontend/ does not',pr)
 # 22 OpenAPI lint
 import shutil as _sh
 if _sh.which('npx'):
