@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 The DuoCode authors (see NOTICE)
 # Specification consistency checks (not application code). Run: python3 .kiro/specs/duocode/check-consistency.py
 # Task 2.7 in tasks.md turns this into the TS-DOC CI job.
 import re,glob,os,yaml,hashlib,sys
@@ -145,6 +147,9 @@ pr=[]
 if sha!='0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0': pr.append('LICENSE checksum differs from FSF text recorded')
 if b'GNU AFFERO GENERAL PUBLIC LICENSE' not in lic or b'Version 3, 19 November 2007' not in lic: pr.append('LICENSE header wrong')
 if 'AGPL-3.0-only' not in files['NOTICE']: pr.append('NOTICE lacks AGPL-3.0-only')
+GATE6_SHA={'NOTICE':'da4743ec575a99ea6009598f032976c6476676745febc95fd0a5f36a89b3aadf','CONTRIBUTING.md':'7fe3f313c4bae45b842340d8157848dbcdae72a96b47deffeb5e5cac8354756f'}   # as approved at Gate 6 (merge ea26b6f)
+for fn,h in GATE6_SHA.items():
+    if hashlib.sha256(open(root+fn,'rb').read()).hexdigest()!=h: pr.append(f'{fn} differs from the version approved at Gate 6 (a change reopens Gate 6)')
 g6=bool(re.search(r'^- \[x\] 1\.6 ',files['tasks.md'],re.M))
 if g6:
     # after Gate 6: no draft banner and no placeholders; NOTICE names exactly the LI-1 holders
@@ -157,7 +162,7 @@ if g6:
     elif set(holders)!=set(x.strip() for x in li1.group(1).split(' and ')): pr.append(f'NOTICE holders {holders} differ from LI-1 ({li1.group(1)})')
     if 'LI-3' not in files['CONTRIBUTING.md']: pr.append('CONTRIBUTING.md does not record the outstanding legal review LI-3')
 elif 'DRAFT' not in files['NOTICE'] or 'DRAFT' not in files['CONTRIBUTING.md']: pr.append('draft banner missing')
-check(f'C13 licensing artefacts present, LICENSE is the FSF AGPL-3.0 text (sha256 {sha[:16]}...), NOTICE names AGPL-3.0-only, and after Gate 6 no draft banner or placeholder remains and NOTICE names the LI-1 holders',pr)
+check(f'C13 licensing artefacts present, LICENSE is the FSF AGPL-3.0 text (sha256 {sha[:16]}...), NOTICE and CONTRIBUTING.md match the Gate 6 versions, NOTICE names AGPL-3.0-only, and no draft banner or placeholder remains',pr)
 # 14 workflows yaml
 pr=[]
 for f in glob.glob(root+'.github/workflows/*.yml'):
@@ -617,6 +622,14 @@ if re.search(r'^- \[x\] 2\.1 ',files['tasks.md'],re.M):
         if not os.path.isdir(root+d) or not any(f.startswith(d) for f in cached): pr.append(f'{d} from design.md section 3 does not exist with a tracked file in it')
     if os.path.exists(root+'frontend'): pr.append('frontend/ exists, but design.md section 3 creates it only when browser work starts')
 check('C42 once task 2.1 is done, every directory in the design.md section 3 layout exists with a tracked file, and frontend/ does not',pr)
+# 43 SPDX headers on source files (task 2.2, R19.2, NOTICE form), mirroring the CI Repository hygiene step
+pr=[]
+src=subprocess.run(['git','-C',root,'ls-files','--cached','*.ts','*.js','*.go','*.sql','*.py','*.sh','*Dockerfile'],capture_output=True,text=True)
+if src.returncode!=0: pr.append(f'git ls-files failed (exit {src.returncode})')
+for f in src.stdout.split():
+    top='\n'.join(open(root+f,encoding='utf-8',errors='replace').read().split('\n')[:5])
+    if 'SPDX-License-Identifier: AGPL-3.0-only' not in top or not re.search(r'Copyright \(C\) \d{4}(-\d{4})? The DuoCode authors \(see NOTICE\)',top): pr.append(f'{f}: missing SPDX header (both NOTICE lines in the first five lines)')
+check(f'C43 every tracked source file carries the two-line SPDX header from NOTICE ({len(src.stdout.split())} files)',pr)
 # 22 OpenAPI lint
 import shutil as _sh
 if _sh.which('npx'):

@@ -1,0 +1,24 @@
+# Environment files (deployment.md section 3). Only .env.example is committed.
+.env
+.env.*
+!.env.example
+
+# Secrets and key material (deployment.md section 3). Only secrets.example/ placeholders are committed.
+secrets/
+*.pem
+*.key
+*keyring*
+!secrets.example/
+!secrets.example/**
+
+# Build and test output
+coverage/
+node_modules/
+dist/
+
+# Local agent working folders and workflow worktrees (never committed)
+.agents/
+.worktrees/
+
+# Operating system files
+.DS_Store

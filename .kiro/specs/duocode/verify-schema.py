@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 The DuoCode authors (see NOTICE)
 # Specification verification (not application code and not a migration).
 # It extracts the DDL from database-schema.md, applies it to a throwaway PostgreSQL cluster,
 # and tests the constraints and the SQL statements the specification relies on:

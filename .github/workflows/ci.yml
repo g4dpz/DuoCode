@@ -56,6 +56,18 @@ jobs:
           if git ls-files | grep -E '\.(exe|dll|so|dylib|o|a|class|jar|wasm)$'; then
             echo "Binary artefacts are tracked"; exit 1
           fi
+      - name: SPDX headers on source files
+        run: |
+          # Form approved at Gate 6 (NOTICE): both lines within the first five lines; a #! line may come first.
+          missing=""
+          while IFS= read -r f; do
+            top=$(head -n 5 "$f")
+            if ! printf '%s\n' "$top" | grep -q 'SPDX-License-Identifier: AGPL-3.0-only' \
+               || ! printf '%s\n' "$top" | grep -Eq 'Copyright \(C\) [0-9]{4}(-[0-9]{4})? The DuoCode authors \(see NOTICE\)'; then
+              missing="$missing $f"
+            fi
+          done < <(git ls-files '*.ts' '*.js' '*.go' '*.sql' '*.py' '*.sh' '*Dockerfile')
+          if [ -n "$missing" ]; then echo "Missing SPDX header:$missing"; exit 1; fi
 
   check:
     name: Format, lint, type check
