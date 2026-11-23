@@ -667,6 +667,30 @@ if os.path.exists(dj):
                 if k not in cfg: pr.append(f'deno.json task {name}: {k} is not a configuration key in design.md section 13')
         if re.search(r'--allow-env(?!=)',cmd): pr.append(f'deno.json task {name}: --allow-env without a key list')
 check('C45 every --allow-env key in backend/deno.json is a configuration key in design.md section 13, and no task has an unrestricted --allow-env',pr)
+# 46 the configuration module's keys and defaults match design.md section 13 and deployment.md 4.2 (task 2.4, RD-25)
+pr=[]
+cf=root+'backend/src/config/config.ts'
+if os.path.exists(cf):
+    src=open(cf).read()
+    sec13=files['design.md'][files['design.md'].index('## 13. Configuration'):files['design.md'].index('## 14.')]
+    rows=re.findall(r'^\| `([A-Z][A-Z0-9_]*)` \| ([^|]*) \|',sec13,re.M)
+    design_keys=[k for k,_ in rows]
+    kb=re.search(r'export const CONFIG_KEYS = \[(.*?)\] as const;',src,re.S)
+    code_keys=re.findall(r'"([A-Z][A-Z0-9_]*)"',kb.group(1)) if kb else []
+    if sorted(code_keys)!=sorted(design_keys): pr.append(f'CONFIG_KEYS differ from design.md section 13: missing {sorted(set(design_keys)-set(code_keys))}, extra {sorted(set(code_keys)-set(design_keys))}')
+    db=re.search(r'export const DEFAULTS[^=]*= \{(.*?)\n\};',src,re.S)
+    code_def=dict(re.findall(r'^\s*([A-Z][A-Z0-9_]*): "([^"]*)",',db.group(1),re.M)) if db else {}
+    for k,cell in rows:
+        m=re.match(r'\s*`([^`]+)`',cell)
+        want=m.group(1) if m and k!='RATE_LIMITS' else None
+        if want is None and k in code_def: pr.append(f'{k}: config.ts has a default but design.md section 13 has none')
+        elif want is not None and code_def.get(k)!=want: pr.append(f'{k}: config.ts default {code_def.get(k)!r} differs from design.md section 13 ({want})')
+    r42=files['deployment.md'][files['deployment.md'].index('### 4.2'):files['deployment.md'].index('### 4.3')]
+    dep_rl={s_:(int(c),float(f)) for s_,c,f in re.findall(r'^\| `((?:ip|pl):[a-z]+)` \|[^|]*\| (\d+) \| ([0-9.]+)',r42,re.M)}
+    code_rl={s_:(int(c),float(f)) for s_,c,f in re.findall(r'"((?:ip|pl):[a-z]+)": \{ capacity: (\d+), refillPerMinute: ([0-9.]+) \}',src)}
+    if not dep_rl: pr.append('no rate-limit rows found in deployment.md 4.2')
+    if code_rl!=dep_rl: pr.append(f'RATE_LIMIT_DEFAULTS differ from deployment.md 4.2: {sorted(set(code_rl.items())^set(dep_rl.items()))}')
+check('C46 backend/src/config/config.ts lists exactly the design.md section 13 keys with the same defaults, and its rate-limit defaults equal deployment.md 4.2',pr)
 # 22 OpenAPI lint
 import shutil as _sh
 if _sh.which('npx'):
