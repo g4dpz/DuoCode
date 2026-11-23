@@ -352,17 +352,18 @@ GitHub Actions jobs on every pull request:
 
 | Job | Steps |
 |---|---|
-| `check` | `deno fmt --check`, `deno lint`, `deno check`, SPDX header check, import-boundary check (engine), banned `Math.random`, migration immutability check |
+| `check` | `deno task fmt --check`, `deno task lint`, `deno task check`, import-boundary check (engine), banned `Math.random`, migration immutability check |
+| `repo-hygiene` | No secret, key or environment files and no compiled binaries tracked; SPDX header check on source files (`spdx-headers.py`) |
 | `test` | All TS groups except simulation and load, with a PostgreSQL service container and a generated test key ring. Coverage report |
 | `openapi` | Redocly lint and the operation coverage script |
-| `docs` | TS-DOC checks |
+| `docs` | TS-DOC checks: `check-consistency.py` on a fresh checkout |
 | `simulate` | 200 games, fixed seed, all strategies, retries and rotation faults injected (nonzero `--lost-rotation-rate`, at least one verified lost-response replay, `--test-deployment`) |
-| `audit` | Dependency review, lockfile integrity |
+| `audit` | Dependency review, lockfile integrity (`deno install --frozen`, the Lockfile integrity job). Known gap: GitHub dependency review and OSV-Scanner do not read `deno.lock`, and JSR packages have no public vulnerability feed, so Deno dependencies have no automated vulnerability scan. Recheck when tooling supports it |
 | `build` | Container image build and start-up smoke test with a generated test key ring |
 
 Scheduled or manual: large simulation and load run.
 
-Merge requires `check`, `test`, `openapi`, `docs`, `audit`, `build` and `simulate` to pass.
+Merge requires `check`, `test`, `openapi`, `docs`, `audit` (with the Lockfile integrity job), `build`, `simulate` and `repo-hygiene` to pass. A job skipped because its files do not exist yet counts as passed.
 
 ## 18. Threat coverage
 
@@ -391,7 +392,7 @@ Every threat in `security-assessment.md` section 5 maps to the test groups that 
 | T19 | TS-OPS |
 | T20 | TS-RET, TS-CONC |
 | T21 | TS-RET, TS-OPS |
-| T22 | CI `audit` job (dependency review, lockfile integrity) |
+| T22 | CI `audit` job (dependency review, lockfile integrity). Deno dependencies have no automated vulnerability scan (section 17) |
 | T23 | TS-CONTRACT (no recovery operation), TS-DOC (limitation stated) |
 | T24 | TS-CRED |
 | T25 | CI `check` job (banned `Math.random`) |

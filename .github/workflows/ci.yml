@@ -67,6 +67,20 @@ jobs:
           fi
       - name: SPDX headers on source files
         run: python3 .kiro/specs/duocode/spdx-headers.py
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pyyaml==6.0.3
+      - name: Specification consistency checks (TS-DOC)
+        run: python3 .kiro/specs/duocode/check-consistency.py
   check:
     name: Format, lint, type check
     runs-on: ubuntu-latest
@@ -91,10 +105,6 @@ jobs:
       - name: Math.random is banned in backend
         run: |
           if grep -rn "Math.random" src; then exit 1; fi
-      - name: SPDX headers
-        run: |
-          missing=$(grep -rL "SPDX-License-Identifier: AGPL-3.0-only" --include=*.ts src tests || true)
-          if [ -n "$missing" ]; then echo "$missing"; exit 1; fi
 
   test:
     name: Tests
@@ -122,15 +132,19 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-      - name: Generate throwaway test key ring
+      - name: Throwaway secrets for the test run
         run: |
           mkdir -p "$RUNNER_TEMP/secrets"
-          k() { head -c 32 /dev/urandom | base64; }
-          printf '{"active":1,"keys":{"1":"%s"}}' "$(k)" > "$RUNNER_TEMP/secrets/keyring.json"
-          echo "CODE_KEYRING_FILE=$RUNNER_TEMP/secrets/keyring.json" >> "$GITHUB_ENV"
+          head -c 32 /dev/urandom > "$RUNNER_TEMP/secrets/ratelimit_hmac_key"
+          echo "RATE_LIMIT_HMAC_KEY_FILE=$RUNNER_TEMP/secrets/ratelimit_hmac_key" >> "$GITHUB_ENV"
+          echo "CODE_KEYRING_FILE=$RUNNER_TEMP/secrets/code_keyring" >> "$GITHUB_ENV"
       - name: Apply migrations
         if: ${{ hashFiles('backend/src/tasks/migrate.ts') != '' }}
         run: deno task migrate
+      - name: Generate the test key ring with the key tooling
+        # Runs once task 4.6 delivers keys:generate, so the ring has the real format (task 1.8 B2).
+        if: ${{ hashFiles('backend/src/tasks/keys_generate.ts') != '' }}
+        run: deno task keys:generate
       - run: deno task test --coverage=coverage
 
   simulate:
