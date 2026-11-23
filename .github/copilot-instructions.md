@@ -12,7 +12,7 @@ DuoCode is an API-first, two-player, asynchronous code-breaking game. Backend MV
 Phase 1 is signed off and Phase 2 is authorised (`tasks.md` 1.9, 2026-11-22). Implementation follows the phases in `tasks.md` in order. Each gate needs an explicit statement from one owner, and one owner is enough (RD-15, `requirements.md`). Review specification changes for ambiguity, conflicts between documents, missing edge cases, security weaknesses, concurrency and data-integrity risks. Do not silently decide product or security questions. Record them as decisions in `requirements.md`.
 
 ## Rules to enforce in reviews and generated code
-- Layout: `backend/`, `tools/` (with `tools/simulator/`), `openapi/`, `docs/`. No `frontend/` yet.
+- Layout: `backend/`, `tools/` (with `tools/simulator/` and `tools/api-client/`), `openapi/`, `docs/`, `deployment/`, `postman/` (`design.md` section 3). No `frontend/` yet.
 - `backend/src/engine` is pure: no Oak, HTTP, database, crypto or I/O imports. Feedback is tested against an independent reference implementation in `backend/tests/reference/` that shares no code with it.
 - The server is authoritative. The acting player always comes from the credential, never from the request.
 - Credential errors: access and rematch credentials fail with `401 INVALID_CREDENTIALS`. Join is the exception: a consumed invitation gets `409 GAME_FULL`, and an unknown invitation or deleted game gets `404 INVALID_INVITATION`, with identical bodies (T11).
@@ -32,6 +32,6 @@ Phase 1 is signed off and Phase 2 is authorised (`tasks.md` 1.9, 2026-11-22). Im
 - Parameterised SQL only. Validate all input server-side. `Math.random` is banned outside the simulator.
 - The simulator uses only the public REST API and supports deterministic replay by `(seed, gameNumber)`.
 - Tests first. Use a real PostgreSQL for integration and concurrency tests.
-- Source files carry `SPDX-License-Identifier: AGPL-3.0-only`. Do not copy another game's branding or artwork.
+- Source files start with the two-line header from `NOTICE` as comments: `SPDX-License-Identifier: AGPL-3.0-only` and `Copyright (C) 2026 The DuoCode authors (see NOTICE)` (checked by `spdx-headers.py`). Do not copy another game's branding or artwork.
 - Do not commit binaries, secrets, `.env` files or key material.
 - Do not add features beyond the current task or the specification (no accounts, WebSockets, Redis, multi-tenant code).
