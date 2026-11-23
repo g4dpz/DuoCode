@@ -161,7 +161,6 @@ if g6:
     if not li1: pr.append('requirements.md LI-1 has no recorded answer')
     elif set(holders)!=set(x.strip() for x in li1.group(1).split(' and ')): pr.append(f'NOTICE holders {holders} differ from LI-1 ({li1.group(1)})')
     if 'LI-3' not in files['CONTRIBUTING.md']: pr.append('CONTRIBUTING.md does not record the outstanding legal review LI-3')
-elif 'DRAFT' not in files['NOTICE'] or 'DRAFT' not in files['CONTRIBUTING.md']: pr.append('draft banner missing')
 check(f'C13 licensing artefacts present, LICENSE is the FSF AGPL-3.0 text (sha256 {sha[:16]}...), NOTICE and CONTRIBUTING.md match the Gate 6 versions, NOTICE names AGPL-3.0-only, and no draft banner or placeholder remains',pr)
 # 14 workflows yaml
 pr=[]
@@ -259,8 +258,8 @@ check('C20 no decision recorded as approved in the register is still described a
 # 21 no application code, migrations or implementation tasks before Phase 1 sign-off (task 1.9)
 import subprocess
 phase1_signed=bool(re.search(r'^- \[x\] 1\.9 ',files['tasks.md'],re.M))
-lsf=subprocess.run(['git','-C',root,'ls-files','--cached'],capture_output=True,text=True)   # tracked files only; untracked build output cannot fail the suite
-tracked=lsf.stdout.split()
+lsf=subprocess.run(['git','-C',root,'ls-files','-z','--cached'],capture_output=True,text=True)   # tracked files only; untracked build output cannot fail the suite
+tracked=[x for x in lsf.stdout.split('\0') if x]
 allowed_ext={'.md','.yaml','.yml','.py'}
 ext_where={'.ts':('backend/','tools/'),'.json':('backend/','tools/','postman/'),'.lock':('backend/','tools/'),'.go':('deployment/caddy/',),'.mod':('deployment/caddy/',),'.sum':('deployment/caddy/',)} if phase1_signed else {}   # Phase 2 onward, by location
 allowed_base={'LICENSE','NOTICE','.gitignore','DuoCode-Requirements','.gitkeep','Dockerfile','.env.example'}
@@ -525,7 +524,9 @@ else:
     for n in ('.env','.env.local','.env.production','app/.env.staging','secrets/key.txt','a.pem','.env.example.bak'):
         if not flag(n): pr.append(f'{n} is not flagged')
     if flag('.env.example') or flag('docs/.env.example'): pr.append('.env.example is not exempt')
-check('C34 the CI repository hygiene step flags .env, .env.* and secret files and exempts only .env.example',pr)
+    if flag('secrets.example/dev.pem') or flag('secrets.example/duocode_ratelimit_key.key'): pr.append('secrets.example/ placeholders are not exempt')
+    if not flag('secrets.examples/a.pem'): pr.append('secrets.examples/ must not be exempt')
+check('C34 the CI repository hygiene step flags .env, .env.* and secret files and exempts only .env.example and secrets.example/ placeholders',pr)
 # 35 required merge checks include audit and exist as CI jobs (task 1.8, D13)
 pr=[]
 mm=re.search(r'Merge requires (.*?) to pass',files['test-strategy.md'])
@@ -617,19 +618,41 @@ check('C41 RD-22 to RD-24 are recorded with the owner statement, mapped, and car
 pr=[]
 if re.search(r'^- \[x\] 2\.1 ',files['tasks.md'],re.M):
     lay42=files['design.md']; lay42=lay42[lay42.index('## 3. Repository layout'):lay42.index('## 4.')]
-    cached=subprocess.run(['git','-C',root,'ls-files','--cached'],capture_output=True,text=True).stdout.split()
+    cached=[x for x in subprocess.run(['git','-C',root,'ls-files','-z','--cached'],capture_output=True,text=True).stdout.split('\0') if x]
     for d in sorted(p for p in tree_paths(lay42,True) if p.endswith('/') and p!='frontend/'):
         if not os.path.isdir(root+d) or not any(f.startswith(d) for f in cached): pr.append(f'{d} from design.md section 3 does not exist with a tracked file in it')
     if os.path.exists(root+'frontend'): pr.append('frontend/ exists, but design.md section 3 creates it only when browser work starts')
 check('C42 once task 2.1 is done, every directory in the design.md section 3 layout exists with a tracked file, and frontend/ does not',pr)
-# 43 SPDX headers on source files (task 2.2, R19.2, NOTICE form), mirroring the CI Repository hygiene step
+# 43 SPDX headers on source files (task 2.2, R19.2): the shared rule in spdx-headers.py, and the CI step that runs it
+import importlib.util as _ilu
+sys.dont_write_bytecode=True   # importing spdx-headers.py must not leave __pycache__ behind
+_sp=_ilu.spec_from_file_location('spdx_headers',root+'.kiro/specs/duocode/spdx-headers.py'); spdx=_ilu.module_from_spec(_sp); _sp.loader.exec_module(spdx)
 pr=[]
-src=subprocess.run(['git','-C',root,'ls-files','--cached','*.ts','*.js','*.go','*.sql','*.py','*.sh','*Dockerfile'],capture_output=True,text=True)
-if src.returncode!=0: pr.append(f'git ls-files failed (exit {src.returncode})')
-for f in src.stdout.split():
-    top='\n'.join(open(root+f,encoding='utf-8',errors='replace').read().split('\n')[:5])
-    if 'SPDX-License-Identifier: AGPL-3.0-only' not in top or not re.search(r'Copyright \(C\) \d{4}(-\d{4})? The DuoCode authors \(see NOTICE\)',top): pr.append(f'{f}: missing SPDX header (both NOTICE lines in the first five lines)')
-check(f'C43 every tracked source file carries the two-line SPDX header from NOTICE ({len(src.stdout.split())} files)',pr)
+try:
+    srcs=spdx.source_files(root); pr+= [f'{f}: missing SPDX header (the two NOTICE lines as the first comment lines)' for f in spdx.missing(root)]
+except Exception as e:
+    srcs=[]; pr.append(str(e))
+hyg=yaml.safe_load(open(root+'.github/workflows/ci.yml'))['jobs'].get('repo-hygiene',{})
+if not any('spdx-headers.py' in st.get('run','') for st in hyg.get('steps',[])): pr.append('the Repository hygiene job does not run spdx-headers.py')
+for bad in ('const s = "SPDX-License-Identifier: AGPL-3.0-only";\n// Copyright (C) 2026 The DuoCode authors (see NOTICE)\n',
+            '// Copyright (C) 2026 The DuoCode authors (see NOTICE)\n// SPDX-License-Identifier: AGPL-3.0-only\n',
+            '// SPDX-License-Identifier: AGPL-3.0-only\n\n// Copyright (C) 2026 The DuoCode authors (see NOTICE)\n'):
+    if spdx.has_header(bad): pr.append('spdx-headers.py accepts a malformed header: '+bad.split(chr(10))[0][:40])
+for good in ('#!/usr/bin/env python3\n# SPDX-License-Identifier: AGPL-3.0-only\n# Copyright (C) 2026 The DuoCode authors (see NOTICE)\n',
+             '/*\n * SPDX-License-Identifier: AGPL-3.0-only\n * Copyright (C) 2026 The DuoCode authors (see NOTICE)\n */\n',
+             '-- SPDX-License-Identifier: AGPL-3.0-only\n-- Copyright (C) 2026-2027 The DuoCode authors (see NOTICE)\n'):
+    if not spdx.has_header(good): pr.append('spdx-headers.py rejects a valid header: '+good.split(chr(10))[1][:40])
+check(f'C43 every tracked source file carries the two-line SPDX header from NOTICE as its first comment lines, and the Repository hygiene job enforces it ({len(srcs)} files)',pr)
+# 44 .gitignore keeps environment, secret and key files out and lets the committed placeholders and the specification in (task 2.2)
+pr=[]
+def _ignored(path): return subprocess.run(['git','-C',root,'check-ignore','-q','--no-index',path]).returncode==0
+if not os.path.exists(root+'.gitignore'): pr.append('.gitignore does not exist')
+else:
+    for path in ('.env','.env.production','backend/.env.local','secrets/x','a.pem','b.key','deployment/configuration/keyring.json','x/key-ring.json','x/key_ring','backend/coverage/lcov.info','node_modules/x','dist/x','.agents/x','.worktrees/y'):
+        if not _ignored(path): pr.append(f'{path} is not ignored')
+    for path in ('.env.example','secrets.example/duocode_code_keyring','secrets.example/dev.pem','.kiro/specs/duocode/keyring-format.md','backend/src/main.ts','NOTICE'):
+        if _ignored(path): pr.append(f'{path} is ignored but must be committable')
+check('C44 .gitignore ignores environment, secret, key and build files and keeps .env.example, secrets.example/ and the specification committable',pr)
 # 22 OpenAPI lint
 import shutil as _sh
 if _sh.which('npx'):

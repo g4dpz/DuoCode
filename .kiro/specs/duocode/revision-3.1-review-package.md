@@ -503,8 +503,8 @@ The logical `pg_dump` restore test is no longer outstanding: it runs on PostgreS
 | File | State |
 |---|---|
 | `LICENSE` | Official FSF GNU AGPL v3 text, 34,523 bytes, SHA-256 `0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0`. Unmodified |
-| `NOTICE` | Approved at Gate 6. Copyright holders David Johnson and Mike Hartley (LI-1) |
-| `CONTRIBUTING.md` | Approved at Gate 6. No separate contributor licence agreement (LI-2). Legal review outstanding (LI-3). Security contact by post (LI-4). External contributions closed until the agreement-recording mechanism exists. Not legal advice |
+| `NOTICE` | Approved at Gate 6. Copyright holders David Johnson and Mike Hartley (LI-1). SHA-256 `da4743ec575a99ea6009598f032976c6476676745febc95fd0a5f36a89b3aadf` (pinned in C13) |
+| `CONTRIBUTING.md` | Approved at Gate 6. No separate contributor licence agreement (LI-2). Legal review outstanding (LI-3). Security contact by post (LI-4). External contributions closed until the agreement-recording mechanism exists. Not legal advice. SHA-256 `7fe3f313c4bae45b842340d8157848dbcdae72a96b47deffeb5e5cac8354756f` (pinned in C13) |
 
 Inputs given by David Johnson (G4DPZ) on 2026-11-22:
 

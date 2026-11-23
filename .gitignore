@@ -8,11 +8,16 @@ secrets/
 *.pem
 *.key
 *keyring*
+*key-ring*
+*key_ring*
 !secrets.example/
 !secrets.example/**
+# The specification may name these words in file names; it holds no key material.
+!.kiro/specs/**
 
 # Build and test output
 coverage/
+__pycache__/
 node_modules/
 dist/
 
