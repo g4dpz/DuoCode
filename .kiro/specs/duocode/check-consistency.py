@@ -272,7 +272,7 @@ for f in tracked:
     if ext=='.sql' or (not phase1_signed and 'migration' in f.lower()):
         if not (phase1_signed and f.startswith('backend/migrations/')): pr.append(f'{f}: migration or SQL file outside backend/migrations/' if phase1_signed else f'{f}: migration or SQL file')
         continue
-    if re.search(r'(?i)keyring|key[-_]ring|secret|^\.env',base) and base!='.env.example' and 'secrets.example/' not in f and not f.startswith('.kiro/'):
+    if re.search(r'(?i)keyring|key[-_]ring|secret|^\.env',base) and base!='.env.example' and 'secrets.example/' not in f and ext not in ('.ts','.tsx','.js','.jsx','.mjs','.cjs','.md','.py'):   # source and documents may use these words; data files may not, anywhere
         pr.append(f'{f}: key ring, secret or environment file name'); continue
     if base in allowed_base: continue
     if ext in ext_where:
@@ -526,6 +526,10 @@ else:
     if flag('.env.example') or flag('docs/.env.example'): pr.append('.env.example is not exempt')
     if flag('secrets.example/dev.pem') or flag('secrets.example/duocode_ratelimit_key.key'): pr.append('secrets.example/ placeholders are not exempt')
     if not flag('secrets.examples/a.pem'): pr.append('secrets.examples/ must not be exempt')
+    for n in ('deployment/configuration/keyring.json','.kiro/specs/duocode/keyring.json','x/duocode_code_keyring','x/key-ring.json'):
+        if not flag(n): pr.append(f'{n} is not flagged')
+    for n in ('backend/src/persistence/keyring.ts','.kiro/specs/duocode/keyring-format.md'):
+        if flag(n): pr.append(f'{n} is flagged, but source and documents may use the word')
 check('C34 the CI repository hygiene step flags .env, .env.* and secret files and exempts only .env.example and secrets.example/ placeholders',pr)
 # 35 required merge checks include audit and exist as CI jobs (task 1.8, D13)
 pr=[]
@@ -622,7 +626,10 @@ if re.search(r'^- \[x\] 2\.1 ',files['tasks.md'],re.M):
     for d in sorted(p for p in tree_paths(lay42,True) if p.endswith('/') and p!='frontend/'):
         if not os.path.isdir(root+d) or not any(f.startswith(d) for f in cached): pr.append(f'{d} from design.md section 3 does not exist with a tracked file in it')
     if os.path.exists(root+'frontend'): pr.append('frontend/ exists, but design.md section 3 creates it only when browser work starts')
-check('C42 once task 2.1 is done, every directory in the design.md section 3 layout exists with a tracked file, and frontend/ does not',pr)
+    for gk in [f for f in cached if os.path.basename(f)=='.gitkeep']:
+        dk=gk[:-len('.gitkeep')]
+        if any(f.startswith(dk) and f!=gk for f in cached): pr.append(f'{gk} remains although {dk} has real files (remove the placeholder)')
+check('C42 once task 2.1 is done, every directory in the design.md section 3 layout exists with a tracked file, no .gitkeep remains beside real files, and frontend/ does not exist',pr)
 # 43 SPDX headers on source files (task 2.2, R19.2): the shared rule in spdx-headers.py, and the CI step that runs it
 import importlib.util as _ilu
 sys.dont_write_bytecode=True   # importing spdx-headers.py must not leave __pycache__ behind
@@ -648,9 +655,9 @@ pr=[]
 def _ignored(path): return subprocess.run(['git','-C',root,'check-ignore','-q','--no-index',path]).returncode==0
 if not os.path.exists(root+'.gitignore'): pr.append('.gitignore does not exist')
 else:
-    for path in ('.env','.env.production','backend/.env.local','secrets/x','a.pem','b.key','deployment/configuration/keyring.json','x/key-ring.json','x/key_ring','backend/coverage/lcov.info','node_modules/x','dist/x','.agents/x','.worktrees/y'):
+    for path in ('.env','.env.production','backend/.env.local','secrets/x','a.pem','b.key','deployment/configuration/keyring.json','.kiro/specs/duocode/keyring.json','x/key-ring.json','x/key_ring','backend/coverage/lcov.info','node_modules/x','dist/x','.agents/x','.worktrees/y'):
         if not _ignored(path): pr.append(f'{path} is not ignored')
-    for path in ('.env.example','secrets.example/duocode_code_keyring','secrets.example/dev.pem','.kiro/specs/duocode/keyring-format.md','backend/src/main.ts','NOTICE'):
+    for path in ('.env.example','secrets.example/duocode_code_keyring','secrets.example/dev.pem','.kiro/specs/duocode/keyring-format.md','backend/src/persistence/keyring.ts','backend/tests/keyring_test.ts','backend/src/main.ts','NOTICE'):
         if _ignored(path): pr.append(f'{path} is ignored but must be committable')
 check('C44 .gitignore ignores environment, secret, key and build files and keeps .env.example, secrets.example/ and the specification committable',pr)
 # 45 every --allow-env key in backend/deno.json is a configuration key in design.md section 13 (task 2.3)
@@ -666,7 +673,16 @@ if os.path.exists(dj):
             for k in lst.split(','):
                 if k not in cfg: pr.append(f'deno.json task {name}: {k} is not a configuration key in design.md section 13')
         if re.search(r'--allow-env(?!=)',cmd): pr.append(f'deno.json task {name}: --allow-env without a key list')
-check('C45 every --allow-env key in backend/deno.json is a configuration key in design.md section 13, and no task has an unrestricted --allow-env',pr)
+    # Reverse: loadConfig reads every CONFIG_KEYS entry, so each `deno run` task must grant them all (an ungranted key throws).
+    cfgts=root+'backend/src/config/config.ts'
+    if os.path.exists(cfgts):
+        kb45=re.search(r'export const CONFIG_KEYS = \[(.*?)\] as const;',open(cfgts).read(),re.S)
+        loader=set(re.findall(r'"([A-Z][A-Z0-9_]*)"',kb45.group(1))) if kb45 else set()
+        for name,cmd in sorted(tasks.items()):
+            if not cmd.startswith('deno run'): continue
+            granted=set(k for lst in re.findall(r'--allow-env=(\S+)',cmd) for k in lst.split(','))
+            for k in sorted(loader-granted): pr.append(f'deno.json task {name}: does not grant {k}, which loadConfig reads')
+check('C45 every --allow-env key in backend/deno.json is a design.md section 13 key, every deno run task grants every key loadConfig reads, and no task has an unrestricted --allow-env',pr)
 # 46 the configuration module's keys and defaults match design.md section 13 and deployment.md 4.2 (task 2.4, RD-25)
 pr=[]
 cf=root+'backend/src/config/config.ts'
@@ -708,12 +724,27 @@ _tids=set(re.findall(r'^- \[[ x]\] (\d+\.\d+[a-z]?) ',files['tasks.md'],re.M))|s
 _nref=0
 for fn,t in files.items():
     if not fn.endswith('.md'): continue
-    for m in re.finditer(r'`([a-z0-9-]+\.md)`,? (?:sections? )?(\d+(?:\.\d+)*[a-z]?)\b(?!\s*(?:to|days|%|ms|s\b))',t):
-        tgt,sec=m.group(1),m.group(2)
+    for m in re.finditer(r'`((?:[\w.-]+/)*[A-Za-z0-9_-]+\.md)`,? (?:sections? )?(\d+(?:\.\d+)*[a-z]?)(?:\s*(?:to|-|\u2013)\s*(\d+(?:\.\d+)*[a-z]?))?\b(?!\s*(?:days|%|ms|s\b|seconds|minutes|hours))',t):
+        tgt=os.path.basename(m.group(1))
         if tgt not in _H: continue
-        _nref+=1
-        if not (sec in _tids if tgt=='tasks.md' else sec in _H[tgt]): pr.append(f'{fn}: `{tgt}` {sec} does not resolve')
-check(f'C48 every "`<file>.md` N" reference resolves to a heading, or in tasks.md to a task or phase ({_nref} references)',pr)
+        for sec in [x for x in (m.group(2),m.group(3)) if x]:
+            _nref+=1
+            if not (sec in _tids if tgt=='tasks.md' else sec in _H[tgt]): pr.append(f'{fn}: `{m.group(1)}` {sec} does not resolve')
+check(f'C48 every "`<file>.md` N" reference (any case, path-qualified, or a range) resolves to a heading, or in tasks.md to a task or phase ({_nref} references)',pr)
+# 49 files delivered by completed tasks are still tracked, so deleting one cannot switch off the CI job that guards it (Phase 2 review #1)
+pr=[]
+# Add an entry when a task delivers a file that CI or later tasks depend on.
+DELIVERED={'2.2':['.gitignore','.kiro/specs/duocode/spdx-headers.py'],
+           '2.3':['backend/deno.json','backend/deno.lock','tools/simulator/deno.json'],
+           '2.4':['backend/src/config/config.ts','backend/tests/config/config_test.ts'],
+           '2.6':['backend/tests/architecture/rules.ts','backend/tests/architecture/rules_test.ts'],
+           '2.7':['.kiro/specs/duocode/check-consistency-negative.py']}
+_tracked49=set(x for x in subprocess.run(['git','-C',root,'ls-files','-z','--cached'],capture_output=True,text=True).stdout.split('\0') if x)
+for tid,paths in DELIVERED.items():
+    if re.search(rf'^- \[x\] {re.escape(tid)} ',files['tasks.md'],re.M):
+        for f in paths:
+            if f not in _tracked49 or not os.path.exists(root+f): pr.append(f'{f} (delivered by task {tid}) is missing')
+check(f'C49 every file delivered by a completed task is still tracked ({sum(len(v) for v in DELIVERED.values())} files)',pr)
 # 22 OpenAPI lint
 import shutil as _sh
 if _sh.which('npx') and not os.environ.get('CHECK_SKIP_REDOCLY'):

@@ -10,10 +10,17 @@ secrets/
 *keyring*
 *key-ring*
 *key_ring*
+# Source code and documents may use these words in their names; they hold no key material.
+!*.ts
+!*.tsx
+!*.js
+!*.jsx
+!*.mjs
+!*.cjs
+!*.md
+!*.py
 !secrets.example/
 !secrets.example/**
-# The specification may name these words in file names; it holds no key material.
-!.kiro/specs/**
 
 # Build and test output
 coverage/

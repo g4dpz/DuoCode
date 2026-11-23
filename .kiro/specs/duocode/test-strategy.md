@@ -363,7 +363,7 @@ GitHub Actions jobs on every pull request:
 
 Scheduled or manual: large simulation and load run.
 
-Merge requires `check`, `test`, `openapi`, `docs`, `audit` (with the Lockfile integrity job), `build`, `simulate` and `repo-hygiene` to pass. A job skipped because its files do not exist yet counts as passed.
+Merge requires `check`, `test`, `openapi`, `docs`, `audit` (with the Lockfile integrity job), `build`, `simulate` and `repo-hygiene` to pass. A job skipped because its files do not exist yet counts as passed; check C49 keeps the files of completed tasks from disappearing. Branch protection on `main` requires these jobs by their display names: Format, lint, type check (`check`); Tests (`test`); OpenAPI lint (`openapi`); Docs (`docs`); Dependency audit (`audit`); Lockfile integrity (`lockfile`); Container build (`build`); Simulation (`simulate`); Repository hygiene (`repo-hygiene`). Keep the two in step when a job is renamed. Break-glass (RD-26): repository administrators are exempt from branch protection, and an owner may merge with a failing or missing required check only when CI itself is broken; the pull request records the reason and the failing check, and the check is re-run once CI is fixed.
 
 ## 18. Threat coverage
 

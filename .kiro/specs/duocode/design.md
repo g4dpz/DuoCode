@@ -341,7 +341,7 @@ All keys are read at start-up, validated, and failure is fatal. Defaults are the
 | `RATE_LIMIT_HMAC_KEY_FILE` | `/run/secrets/duocode_ratelimit_key` | Secret for IP subject HMAC (RD-9). Not backed up (CH-2) |
 | `TRUSTED_PROXY_CIDRS` | none (required in production) | Addresses whose `X-Forwarded-For` is trusted |
 | `ADMIN_TOKEN_SHA256` | none (required in production) | Hex SHA-256 of the admin token |
-| `ADMIN_LISTEN_ADDR` | none (required in production) | Admin listener address: the `app` address on the internal network and port 8081. Never loopback, never all interfaces (`0.0.0.0`), never published (RD-17) |
+| `ADMIN_LISTEN_ADDR` | none (required in production) | Admin listener address: the `app` address on the internal network and port 8081. Never loopback, never all interfaces (`0.0.0.0`), never published (RD-17). These network rules and the port are checked in production; development checks the `host:port` form only (RD-27) |
 | `TTL_UNJOINED_DAYS` | `7` | Unjoined retention |
 | `TTL_IN_PROGRESS_DAYS` | `30` | In-progress retention |
 | `TTL_COMPLETED_DAYS` | `180` | Completed retention |

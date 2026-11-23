@@ -57,7 +57,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: No secrets or key material committed
         run: |
-          if git ls-files | grep -E '(^|/)(\.env(\..*)?|secrets/.*|.*\.pem|.*\.key)$' | grep -vE '(^|/)\.env\.example$|(^|/)secrets\.example/'; then
+          if git ls-files | grep -E '(^|/)(\.env(\..*)?|secrets/.*|.*\.pem|.*\.key|[^/]*(keyring|key[-_]ring)[^/]*\.json|[^/]*(keyring|key[-_]ring)[^/.]*)$' | grep -vE '(^|/)\.env\.example$|(^|/)secrets\.example/'; then
             echo "Secret-like files are tracked"; exit 1
           fi
       - name: No compiled binaries committed
@@ -70,11 +70,10 @@ jobs:
   docs:
     name: Docs
     runs-on: ubuntu-latest
+    env:
+      CHECK_SKIP_REDOCLY: '1'   # the OpenAPI lint job runs Redocly; no need to run it twice
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
