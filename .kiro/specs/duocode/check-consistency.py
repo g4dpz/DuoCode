@@ -168,21 +168,31 @@ check('C14 GitHub workflow files parse as YAML',pr)
 pr=[]
 tk=files['tasks.md']
 lines=tk.splitlines()
+DONE=re.compile(r'^\s*- \*\*Done \d{4}-\d{2}-\d{2}\.?\*\*',re.M)
+SIGNED=re.compile(r'Signed off \d{4}-\d{2}-\d{2} by .+owner statement "[^"]*\S[^"]*"')
+def entry_of(idx):
+    out=[]
+    for x in lines[idx+1:]:
+        if x.startswith('- [') or x.startswith('#'): break
+        out.append(x)
+    return '\n'.join(out)
 for idx,l in enumerate(lines):
     if re.match(r'- \[x\]',l):
         m=re.match(r'- \[x\] (1\.[1-6]) \*\*Gate|- \[x\] (1\.9) \*\*Phase 1 sign-off',l)
-        nxt=lines[idx+1] if idx+1<len(lines) else ''
+        ent=entry_of(idx)
         mp=re.match(r'- \[x\] (\d+)\.\d+[a-z]? ',l)
         if mp and int(mp.group(1))>=2:
             tid=l.split()[2]
             if not re.search(r'^- \[x\] 1\.9 ',tk,re.M): pr.append(f'task {tid} marked done before Phase 1 sign-off (1.9)')
-            elif not re.search(r'Done \d{4}-\d{2}-\d{2}',nxt): pr.append(f'task {tid} marked done without a dated record')
+            elif re.search(r'\*\*Gate|\*\*Phase \d+ sign-off',l):
+                if not SIGNED.search(ent): pr.append(f'task {tid} (a gate) marked done without a recorded owner sign-off')
+            elif not DONE.search(ent): pr.append(f'task {tid} marked done without a dated record (- **Done YYYY-MM-DD**)')
             continue
         if re.match(r'- \[x\] 1\.[78] ',l):
-            if not re.search(r'Done \d{4}-\d{2}-\d{2}',nxt): pr.append(f'{l[6:9]} marked done without a dated record')
+            if not DONE.search(ent): pr.append(f'{l[6:9]} marked done without a dated record (- **Done YYYY-MM-DD**)')
             continue
         if not m: pr.append('marked done but not a Phase 1 gate: '+l[:60])
-        elif not re.search(r'Signed off \d{4}-\d{2}-\d{2} by .+owner statement "[^"]*\S[^"]*"',nxt): pr.append(f'task {m.group(1) or m.group(2)} marked done without a recorded owner sign-off')
+        elif not SIGNED.search(ent): pr.append(f'task {m.group(1) or m.group(2)} marked done without a recorded owner sign-off')
 if re.search(r'^- \[x\] 1\.9',tk,re.M) and len(re.findall(r'^- \[x\] 1\.[1-6] ',tk,re.M))<6: pr.append('1.9 marked done before all six gates')
 if re.search(r'^- \[x\] 1\.9',tk,re.M) and len(re.findall(r'^- \[x\] 1\.[78] ',tk,re.M))<2: pr.append('1.9 marked done before 1.7 and 1.8 are complete')
 if not re.search(r'^- \[[ x]\] 1\.9 .*1\.7 and 1\.8 are complete',tk,re.M): pr.append('1.9 does not list 1.7 and 1.8 as prerequisites')
@@ -247,19 +257,24 @@ phase1_signed=bool(re.search(r'^- \[x\] 1\.9 ',files['tasks.md'],re.M))
 lsf=subprocess.run(['git','-C',root,'ls-files','-co','--exclude-standard'],capture_output=True,text=True)
 tracked=lsf.stdout.split()
 allowed_ext={'.md','.yaml','.yml','.py'}
+if phase1_signed: allowed_ext|={'.ts','.json','.lock','.go','.mod','.sum','.sql'}   # Phase 2 onward: Deno, Postman, Caddy build, migrations
+allowed_base={'LICENSE','NOTICE','.gitignore','DuoCode-Requirements','.gitkeep','Dockerfile','.env.example'}
 pr=[f'git ls-files failed (exit {lsf.returncode}): {lsf.stderr.strip()[:100]}'] if lsf.returncode!=0 else []
-for f in ([] if phase1_signed else tracked):
+for f in tracked:
     base=os.path.basename(f); ext=os.path.splitext(f)[1]
     top=f.split('/')[0]
     if top=='.agents': continue   # local agent working files, never committed
-    if top in('backend','tools','deployment','frontend','postman','docs'): pr.append(f'{f}: implementation directory')
-    elif f.endswith('.sql') or 'migration' in f.lower(): pr.append(f'{f}: migration or SQL file')
-    elif base in('LICENSE','NOTICE','.gitignore','DuoCode-Requirements'): continue
-    elif ext=='.py' and f.startswith('.kiro/specs/duocode/'): continue   # specification tooling, not application code
-    elif ext not in allowed_ext: pr.append(f'{f}: unexpected file type')
-    elif f.startswith('.github/workflows/'): continue               # CI skeleton added earlier at the owner request, no application logic
+    if not phase1_signed and top in('backend','tools','deployment','frontend','postman','docs'): pr.append(f'{f}: implementation directory'); continue
+    if ext=='.sql' or (not phase1_signed and 'migration' in f.lower()):
+        if not (phase1_signed and f.startswith('backend/migrations/')): pr.append(f'{f}: migration or SQL file outside backend/migrations/' if phase1_signed else f'{f}: migration or SQL file')
+        continue
+    if base in allowed_base: continue
+    if ext=='.py':
+        if not f.startswith('.kiro/specs/duocode/'): pr.append(f'{f}: unexpected file type')   # only the specification tool scripts are Python
+        continue
+    if ext not in allowed_ext: pr.append(f'{f}: unexpected file type')
 if not phase1_signed and any(l.startswith('- [x]') and not __import__('re').match(r'- \[x\] 1\.(?:[1-6] \*\*Gate|[78] |9 \*\*Phase 1 sign-off)',l) for l in files['tasks.md'].splitlines()): pr.append('an implementation task is marked done')
-check('C21 before Phase 1 sign-off (task 1.9), no application code, database migration or implementation directory exists'+(' (1.9 signed off: implementation allowed)' if phase1_signed else ''),pr)
+check('C21 no implementation directory before Phase 1 sign-off (task 1.9); SQL only under backend/migrations/ and only after 1.9; every tracked file has an allowed type'+(' (1.9 signed off)' if phase1_signed else ''),pr)
 # 23 key usage design consistency (CR-9)
 pr=[]
 ku=re.search(r"CREATE TABLE key_usage \((.*?)\n\);",ddl,re.S)
@@ -584,6 +599,13 @@ for g in ('1.1','1.2','1.4','1.5'):
     m=re.search(r'- \[x\] '+re.escape(g)+r' .*?(?=\n- \[)',files['tasks.md'],re.S)
     if not m or 'RD-24' not in m.group(0) and g in ('1.1','1.4','1.5') or not re.search(r'Awaiting an explicit owner confirmation|Re-confirmed \d{4}-\d{2}-\d{2} by .+owner statement',m.group(0)): pr.append('tasks.md '+g+': reopened entry does not cover RD-22 to RD-24')
 check('C41 RD-22 to RD-24 are recorded with the owner statement, mapped, and carried into the reopened gate entries (RD-23 prune command, RD-24 reencrypt skip)',pr)
+# 42 the design.md section 3 directories exist once task 2.1 is done (R19.1)
+pr=[]
+if re.search(r'^- \[x\] 2\.1 ',files['tasks.md'],re.M):
+    for d in sorted(p for p in tree_paths(lay,True) if p.endswith('/') and p!='frontend/'):
+        if not os.path.isdir(root+d): pr.append(f'{d} from design.md section 3 does not exist')
+    if os.path.exists(root+'frontend'): pr.append('frontend/ exists, but design.md section 3 creates it only when browser work starts')
+check('C42 once task 2.1 is done, every directory in the design.md section 3 layout exists and frontend/ does not',pr)
 # 22 OpenAPI lint
 import shutil as _sh
 if _sh.which('npx'):
