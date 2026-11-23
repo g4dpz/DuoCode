@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # CI per .kiro/specs/duocode/test-strategy.md section 12.
-# Spec jobs run now. Backend jobs run only once backend/deno.json exists (Phase 2, after Phase 1 sign-off).
+# Spec jobs run now. Each backend job runs once the files it needs exist (task 2.3), so CI never reports a pass for a job with nothing to check.
 name: CI
 
 on:
@@ -20,15 +20,21 @@ jobs:
     name: Detect which parts exist
     runs-on: ubuntu-latest
     outputs:
-      backend: ${{ steps.d.outputs.backend }}
+      backend_src: ${{ steps.d.outputs.backend_src }}
+      backend_tests: ${{ steps.d.outputs.backend_tests }}
       simulator: ${{ steps.d.outputs.simulator }}
       dockerfile: ${{ steps.d.outputs.dockerfile }}
     steps:
       - uses: actions/checkout@v4
       - id: d
         run: |
-          echo "backend=$([ -f backend/deno.json ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          echo "simulator=$([ -f tools/simulator/deno.json ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          has() { [ -n "$(git ls-files -- "$@")" ]; }
+          # check: backend/deno.json and at least one TypeScript file under backend/src
+          echo "backend_src=$([ -f backend/deno.json ] && has 'backend/src/*.ts' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          # test: also the migration entry point and at least one test file
+          echo "backend_tests=$([ -f backend/deno.json ] && [ -f backend/src/tasks/migrate.ts ] && has 'backend/tests/*.ts' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          # simulate: the simulator entry point and the CI Compose file it starts
+          echo "simulator=$([ -f tools/simulator/deno.json ] && [ -f tools/simulator/main.ts ] && [ -f deployment/docker-compose.ci.yml ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "dockerfile=$([ -f backend/Dockerfile ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
   openapi:
@@ -62,7 +68,7 @@ jobs:
     name: Format, lint, type check
     runs-on: ubuntu-latest
     needs: [detect]
-    if: ${{ needs.detect.outputs.backend == 'true' }}
+    if: ${{ needs.detect.outputs.backend_src == 'true' }}
     defaults:
       run:
         working-directory: backend
@@ -91,7 +97,7 @@ jobs:
     name: Tests
     runs-on: ubuntu-latest
     needs: [detect]
-    if: ${{ needs.detect.outputs.backend == 'true' }}
+    if: ${{ needs.detect.outputs.backend_tests == 'true' }}
     services:
       postgres:
         image: postgres:16
