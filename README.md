@@ -323,8 +323,10 @@ duocode/
 ├── openapi/
 │   └── openapi.yaml
 ├── postman/
+│   └── environments/
 ├── docs/
 ├── deployment/
+│   ├── configuration/
 │   └── caddy/
 ├── README.md
 ├── CONTRIBUTING.md
